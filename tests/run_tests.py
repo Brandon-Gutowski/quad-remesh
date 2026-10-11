@@ -80,7 +80,7 @@ class CoreQuality(unittest.TestCase):
         self.assertEqual(res.metrics.get("flipped", 0), 0)
 
     def test_beveled_box(self):
-        res, h, a, _, _ = run_core("beveled_box")
+        res, h, a, _, _ = run_core("beveled_box", density=30)
         self.check_common(res, h, a, max_poles=6)
         self.assertLessEqual(res.metrics["irregular"], 16)
 
@@ -110,28 +110,33 @@ class CoreQuality(unittest.TestCase):
         on_eq = np.abs(res.V[:, 2]) < 1e-4
         self.assertGreater(on_eq.sum(), int(2 * math.pi / h * 0.8))
 
-    def test_guides_change_flow(self):
-        V, F = meshes.plane(size=2.0, sub=20)
+    def test_guides_steer_flow(self):
+        # A tilted great circle drawn on a sphere: edges near the stroke must
+        # run along it (or across it), which the unguided field does not do.
+        V, F = meshes.sphere(seg=64, rings=32)
         a = area_of(V, F)
-        h = math.sqrt(a) / 16
-        guide = [np.array([[-1.0, -1.0, 0.0], [1.0, 1.0, 0.0]])]  # 45 degree stroke
-        res = pipeline.run(V, F, pipeline.Params(target_edge=h, guides=guide, guide_strength=1.0,
-                                                 detect_sharp=False))
-        self.assertEqual(res.metrics["quad_ratio"], 1.0)
-        # Edges near the diagonal should be aligned with it (or perpendicular).
-        E = set()
-        for f in res.faces:
-            for k in range(len(f)):
-                E.add(tuple(sorted((f[k], f[(k + 1) % len(f)]))))
-        E = np.array(list(E))
-        mid = res.V[E].mean(1)
-        near = np.abs(mid[:, 0] - mid[:, 1]) < 0.15
-        d = res.V[E[near, 1]] - res.V[E[near, 0]]
-        d /= np.linalg.norm(d, axis=1, keepdims=True)
-        diag = np.array([1.0, 1.0, 0.0]) / math.sqrt(2)
-        c = np.abs(d @ diag)
-        aligned = (c > 0.9) | (c < 0.45)
-        self.assertGreater(aligned.mean(), 0.8)
+        h = math.sqrt(a) / 24
+        tilt = math.radians(35)
+        s = np.linspace(0, 2 * math.pi, 200)
+        circle = np.stack([np.cos(s), np.sin(s) * math.cos(tilt), np.sin(s) * math.sin(tilt)], 1)
+
+        def alignment(res):
+            E = set()
+            for f in res.faces:
+                for k in range(len(f)):
+                    E.add(tuple(sorted((f[k], f[(k + 1) % len(f)]))))
+            E = np.array(list(E))
+            mid = res.V[E].mean(1)
+            nrm = np.array([0.0, -math.sin(tilt), math.cos(tilt)])   # circle plane normal
+            near = np.abs(mid @ nrm) < 0.6 * h
+            d = res.V[E[near, 1]] - res.V[E[near, 0]]
+            d /= np.linalg.norm(d, axis=1, keepdims=True)
+            along = np.abs(d @ nrm)          # 0 = along the circle, 1 = across it
+            return ((along < 0.35) | (along > 0.9)).mean()
+
+        guided = pipeline.run(V, F, pipeline.Params(target_edge=h, guides=[circle], guide_strength=1.0))
+        self.assertEqual(guided.metrics["quad_ratio"], 1.0)
+        self.assertGreater(alignment(guided), 0.85)
 
     def test_quad_dominant_mode(self):
         res, h, a, _, _ = run_core("sphere", pure_quads=False)

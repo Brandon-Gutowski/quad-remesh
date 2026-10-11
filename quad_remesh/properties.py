@@ -72,7 +72,8 @@ class QR_Settings(bpy.types.PropertyGroup):
     )
     cleanup: BoolProperty(
         name="Reduce Poles",
-        description="Run topology clean-up to remove unnecessary irregular vertices (poles/stars)",
+        description="Globally straighten the quad grid and clean up topology to remove "
+                    "unnecessary irregular vertices (poles/stars)",
         default=True,
     )
     hide_original: BoolProperty(

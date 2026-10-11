@@ -21,6 +21,7 @@ def _params(context, obj):
         pure_quads=st.pure_quads,
         relax_iterations=st.relax_iterations,
         cleanup=st.cleanup,
+        quantize=st.cleanup,
     )
     return V, F, params
 
