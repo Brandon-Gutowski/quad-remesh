@@ -1,6 +1,6 @@
 import bpy
 
-from . import bridge
+from . import bridge, operators
 
 
 class QR_PT_main(bpy.types.Panel):
@@ -78,7 +78,12 @@ class QR_PT_main(bpy.types.Panel):
         layout.separator()
         row = layout.row()
         row.scale_y = 1.6
-        row.operator("quad_remesh.remesh", icon='MOD_REMESH')
+        prog = operators.PROGRESS
+        if prog["active"] and prog["source"] == ob.name_full:
+            pct = int(round(prog["frac"] * 100))
+            row.progress(factor=prog["frac"], type='BAR', text=f"{prog['stage']}  {pct}%")
+        else:
+            row.operator("quad_remesh.remesh", icon='MOD_REMESH')
         if st.last_report:
             box = layout.box()
             for part in st.last_report.split(" | "):

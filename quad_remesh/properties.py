@@ -95,7 +95,7 @@ class QR_Settings(bpy.types.PropertyGroup):
         name="Refine Thin Parts",
         description="Use smaller quads where the mesh is thinner than a quad (ears, fins, "
                     "cloth) so both sides stay clean. Adds a few poles at the size transitions",
-        default=False,
+        default=True,
     )
     hide_original: BoolProperty(
         name="Hide Original",
