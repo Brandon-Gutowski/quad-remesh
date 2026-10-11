@@ -2,11 +2,11 @@
 yields (stage, progress) tuples and returns a Result."""
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from . import cleanup, metrics, quadify
+from . import cleanup, metrics, quadify, symmetry
 from .extract import _components, extract_mesh
 from .features import Features
 from .hierarchy import build_hierarchy
@@ -35,6 +35,7 @@ class Params:
     size_flexibility: float = 0.0
     adapt_thin: bool = False
     quantize: bool = True
+    symmetry_plane: tuple = None   # (point, unit normal); keeps the + side and mirrors it
 
 
 @dataclass
@@ -93,6 +94,36 @@ def guide_constraints(mesh, guides, radius, strength):
 
 
 def remesh(V, F, params):
+    if params.symmetry_plane is None:
+        return (yield from _remesh(V, F, params))
+    p0 = np.asarray(params.symmetry_plane[0], dtype=np.float64)
+    nrm = np.asarray(params.symmetry_plane[1], dtype=np.float64)
+    nrm = nrm / np.linalg.norm(nrm)
+    V0, F0 = np.asarray(V, dtype=np.float64), np.asarray(F, dtype=np.int64)
+    Vh, Fh, marked = symmetry.cut_half(V0, F0, p0, nrm, params.marked_pairs)
+    if not len(Fh):
+        raise ValueError("Nothing on the positive side of the symmetry plane")
+    half = replace(params, symmetry_plane=None, marked_pairs=marked,
+                   guides=symmetry.fold_guides(params.guides, p0, nrm))
+    res = yield from _remesh(Vh, Fh, half)
+    yield ("Mirroring", 0.99)
+    Vm, faces, fe = symmetry.mirror_weld(res.V, res.faces, res.feature_edges, p0, nrm,
+                                         seam_tol=0.6 * params.target_edge)
+    # Seam vertices left with no interior edge become valence-2 after welding:
+    # dissolve them and merge the two resulting triangles back into one quad.
+    pm = PolyMesh(Vm, faces, np.zeros(len(Vm), bool), np.zeros(len(Vm), bool),
+                  np.zeros(len(Vm), bool), fe)
+    if quadify.dissolve_valence2(pm):
+        quadify.pair_odd_faces(pm, max_depth=1)
+        pm.compact()
+    Vm, faces, fe = pm.V, pm.faces, pm.feature_edges
+    surf = SurfaceProjector(*clean(V0, F0)[:2])
+    m = metrics.compute(Vm, faces, surf)
+    m["method"] = res.metrics.get("method", "")
+    return Result(Vm, faces, m, fe)
+
+
+def _remesh(V, F, params):
     h = float(params.target_edge)
     scale = 2.0 * h if params.pure_quads else h
 
@@ -211,6 +242,7 @@ def _finish(ctx, quantized, p0, p1):
 
     yield ("Fixing irregular faces", prog(0.25))
     quadify.fill_holes(pm)
+    quadify.close_notches(pm)
     quadify.mark_feature_edges(pm, seg)
     quadify.dissolve_valence2(pm)
     quadify.pair_odd_faces(pm, max_depth=6)

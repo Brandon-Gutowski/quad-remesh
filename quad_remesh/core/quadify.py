@@ -65,12 +65,28 @@ def dissolve_valence2(pm):
         ef = pm.edge_faces()
         val, open_v = pm.valence(ef)
         vf = pm.vertex_faces()
+        nbrs = {}
+        for (a, b) in ef:
+            nbrs.setdefault(a, set()).add(b)
+            nbrs.setdefault(b, set()).add(a)
+        edges = set(ef.keys())
+        touched = set()
         for v in np.nonzero((val == 2) & ~open_v & ~pm.corner & ~pm.bnd)[0]:
             fl = vf[v]
             if len(fl) != 2 or any(pm.faces[fi] is None or len(pm.faces[fi]) <= 3 for fi in fl):
                 continue
+            if any(fi in touched for fi in fl):
+                continue
+            nb = nbrs.get(v, set())
+            if len(nb) != 2:
+                continue
+            u, w = nb
+            if ekey(u, w) in edges:
+                continue  # neighbours already joined: removing v would go non-manifold
             for fi in fl:
                 pm.faces[fi] = [x for x in pm.faces[fi] if x != v]
+                touched.add(fi)
+            edges.add(ekey(u, w))
             total += 1
             changed = True
         pm.faces = [f for f in pm.faces if f is not None]
@@ -300,4 +316,67 @@ def fill_holes(pm, max_len=12):
                 used.add((loop[i], loop[(i + 1) % len(loop)]))
             pm.faces.append(loop)
             added += 1
+    return added
+
+
+def close_notches(pm, max_len=10, reach=2.5):
+    """Close gaps that open onto a real boundary. Such a gap merges into the
+    long boundary loop, so fill_holes never sees it as a small loop; here each
+    run of off-boundary vertices along a boundary loop is closed back to its
+    two boundary endpoints when those are about one cell apart."""
+    he = set()
+    for f in pm.faces:
+        m = len(f)
+        for k in range(m):
+            he.add((f[k], f[(k + 1) % m]))
+    nxt = {}
+    multi = set()
+    for a, b in he:
+        if (b, a) not in he:
+            if b in nxt:
+                multi.add(b)
+            nxt[b] = a                       # boundary walk runs b -> a
+    if not nxt:
+        return 0
+    E = np.array([[a, b] for a, b in he], dtype=np.int64)
+    mean_len = float(np.linalg.norm(pm.V[E[:, 0]] - pm.V[E[:, 1]], axis=1).mean())
+    existing = {ekey(a, b) for a, b in he}
+    seen = set()
+    added = 0
+    for start in list(nxt.keys()):
+        if start in seen or start in multi:
+            continue
+        loop = [start]
+        seen.add(start)
+        v = nxt[start]
+        ok = True
+        while v != start:
+            if v in seen or v in multi or v not in nxt:
+                ok = False
+                break
+            seen.add(v)
+            loop.append(v)
+            v = nxt[v]
+        if not ok or len(loop) < 4 or not pm.bnd[loop].any():
+            continue
+        L = len(loop)
+        # rotate so the loop starts on a boundary vertex
+        k0 = next(i for i in range(L) if pm.bnd[loop[i]])
+        loop = loop[k0:] + loop[:k0]
+        i = 0
+        while i < L:
+            if pm.bnd[loop[i]] and not pm.bnd[loop[(i + 1) % L]]:
+                j = i + 1
+                while not pm.bnd[loop[j % L]] and j - i < L:
+                    j += 1
+                run = [loop[k % L] for k in range(i, j + 1)]
+                u, w = run[0], run[-1]
+                if (3 <= len(run) <= max_len and u != w and ekey(u, w) not in existing
+                        and np.linalg.norm(pm.V[u] - pm.V[w]) <= reach * mean_len):
+                    pm.faces.append(run)
+                    existing.add(ekey(u, w))
+                    added += 1
+                i = j
+            else:
+                i += 1
     return added

@@ -1,7 +1,7 @@
 import math
 
 import bpy
-from bpy.props import BoolProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 
 
 def _redraw(self, context):
@@ -59,6 +59,21 @@ class QR_Settings(bpy.types.PropertyGroup):
         name="Guides",
         description="Curve object whose splines guide the edge flow",
         type=bpy.types.Object, poll=_poll_curve,
+    )
+    use_symmetry: BoolProperty(
+        name="Symmetry",
+        description="Remesh one half and mirror it, so the result is exactly symmetric "
+                    "with an edge loop on the mirror plane",
+        default=False,
+    )
+    symmetry_axis: EnumProperty(
+        name="Axis",
+        description="Mirror across the plane through the object origin perpendicular to "
+                    "this local axis. The + side is remeshed and mirrored",
+        items=(('X', "X", "Mirror across the local YZ plane"),
+               ('Y', "Y", "Mirror across the local XZ plane"),
+               ('Z', "Z", "Mirror across the local XY plane")),
+        default='X',
     )
     pure_quads: BoolProperty(
         name="Pure Quads",

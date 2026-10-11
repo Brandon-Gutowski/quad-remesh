@@ -24,6 +24,7 @@ Pure Python + NumPy: nothing to compile, installs as a single zip.
 | **Show Checker** | Overlays a checker grid on the active mesh. Each square is the size of one output quad. |
 | **Sharp Edges › By Angle** | Edges sharper than the angle become hard features. The new edge flow runs along them, and an edge loop lands exactly on each one. The check is made at quad scale, so scan noise is ignored. |
 | **Follow Marked Sharp Edges** | Treats edges you marked with *Edge › Mark Sharp* as features. |
+| **Symmetry** + **X / Y / Z** | Remeshes one half and mirrors it, so the result is exactly symmetric with an edge loop on the mirror plane. The plane goes through the object origin, perpendicular to the chosen local axis (like the Mirror modifier), and the + side is the one remeshed. Guide strokes drawn on the − side are mirrored over. |
 | **Draw Guides** | Click it, then **LMB-drag** on the surface to draw strokes the flow should follow. **Shift+LMB-drag** erases and **Enter/RMB/Esc** finishes. Strokes are stored in a curve object (`QR_Guides_<name>`), so you can edit them too. Any curve object can be used as guides. |
 | **Strength** | How strongly the guides steer the flow (1 = hard constraint). |
 | **Pure Quads** | Guarantees zero triangles and n-gons. |
@@ -71,7 +72,7 @@ vertices). The tool keeps everything beyond that to a minimum.
 ## Development
 
 ```sh
-# headless test suite (13 tests: core quality + add-on integration)
+# headless test suite (16 tests: core quality, symmetry, add-on integration)
 blender -b --factory-startup --python tests/run_tests.py
 
 # compare settings across meshes

@@ -138,6 +138,35 @@ class CoreQuality(unittest.TestCase):
         self.assertEqual(guided.metrics["quad_ratio"], 1.0)
         self.assertGreater(alignment(guided), 0.85)
 
+    def _check_symmetric(self, res, axis):
+        from mathutils.kdtree import KDTree
+        kd = KDTree(len(res.V))
+        for i, p in enumerate(res.V):
+            kd.insert(p, i)
+        kd.balance()
+        flip = np.ones(3)
+        flip[axis] = -1.0
+        worst = max(kd.find(p * flip)[2] for p in res.V)
+        self.assertLess(worst, 1e-6, "result must be exactly mirror symmetric")
+
+    def test_symmetry_x(self):
+        V, F = meshes.smooth_monkey()
+        a = area_of(V, F)
+        h = math.sqrt(a) / 30
+        res = pipeline.run(V, F, pipeline.Params(target_edge=h, symmetry_plane=((0, 0, 0), (1, 0, 0))))
+        self.assertEqual(res.metrics["quad_ratio"], 1.0)
+        self.assertEqual(res.metrics["nonmanifold_edges"], 0)
+        self.assertEqual(res.metrics["v6plus"], 0)
+        self._check_symmetric(res, 0)
+
+    def test_symmetry_closed_mesh_is_watertight(self):
+        for name, axis in (("sphere", 2), ("beveled_box", 1), ("torus", 0)):
+            res, h, a, _, _ = run_core(name, density=30, symmetry_plane=((0, 0, 0), tuple(np.eye(3)[axis])))
+            self.assertEqual(res.metrics["quad_ratio"], 1.0, name)
+            self.assertEqual(res.metrics["boundary_edges"], 0, name + " seam must be welded")
+            self.assertEqual(res.metrics["nonmanifold_edges"], 0, name)
+            self._check_symmetric(res, axis)
+
     def test_quad_dominant_mode(self):
         res, h, a, _, _ = run_core("sphere", pure_quads=False)
         self.assertGreater(res.metrics["quad_ratio"], 0.95)
@@ -203,6 +232,37 @@ class AddonIntegration(unittest.TestCase):
         self.assertIsNotNone(sharp, "feature edges should be marked sharp on the result")
         vals = [d.value for d in sharp.data]
         self.assertGreater(sum(vals), 12)
+
+    def test_symmetry_operator_on_transformed_object(self):
+        me = bpy.data.meshes.new("Monkey")
+        bm = bmesh.new()
+        bmesh.ops.create_monkey(bm)
+        bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=1, use_grid_fill=True)
+        bm.to_mesh(me)
+        bm.free()
+        ob = bpy.data.objects.new("Monkey", me)
+        bpy.context.scene.collection.objects.link(ob)
+        bpy.context.view_layer.objects.active = ob
+        ob.location = (1.0, 2.0, 0.5)
+        ob.rotation_euler = (0.3, 0.2, 0.7)
+        ob.scale = (1.5, 1.0, 0.8)
+        bpy.context.view_layer.update()
+        st = ob.quad_remesh
+        st.use_symmetry = True
+        st.symmetry_axis = 'X'
+        st.density = 25
+        r = bpy.ops.quad_remesh.remesh('EXEC_DEFAULT')
+        self.assertEqual(r, {'FINISHED'})
+        res = bpy.data.objects.get("Monkey_Quad")
+        self.assertEqual({len(p.vertices) for p in res.data.polygons}, {4})
+        co = np.array([v.co[:] for v in res.data.vertices])     # local space
+        from mathutils.kdtree import KDTree
+        kd = KDTree(len(co))
+        for i, p in enumerate(co):
+            kd.insert(p, i)
+        kd.balance()
+        worst = max(kd.find((-p[0], p[1], p[2]))[2] for p in co)
+        self.assertLess(worst, 1e-4)
 
     def test_guide_curve_is_used(self):
         ob = self._make_cube()

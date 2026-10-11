@@ -23,6 +23,7 @@ def _params(context, obj):
         cleanup=st.cleanup,
         quantize=st.cleanup,
         adapt_thin=st.adapt_thin,
+        symmetry_plane=bridge.symmetry_plane(obj, st.symmetry_axis) if st.use_symmetry else None,
     )
     return V, F, params
 

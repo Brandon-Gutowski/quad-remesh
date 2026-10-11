@@ -125,6 +125,16 @@ def remesh_inputs(context, obj):
     return V, F, marked
 
 
+def symmetry_plane(obj, axis):
+    """World-space (point, unit normal) of the object's local mirror plane."""
+    k = "XYZ".index(axis)
+    M = np.array(obj.matrix_world, dtype=np.float64)
+    local = np.zeros(3)
+    local[k] = 1.0
+    n = np.linalg.inv(M[:3, :3]).T @ local       # normals transform by the inverse transpose
+    return M[:3, 3].copy(), n / np.linalg.norm(n)
+
+
 def guide_polylines(guide_obj):
     """World-space point lists of every spline in a curve object."""
     if guide_obj is None or guide_obj.type != 'CURVE':

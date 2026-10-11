@@ -50,6 +50,13 @@ class QR_PT_main(bpy.types.Panel):
         box.prop(st, "follow_marked_sharp")
 
         box = layout.box()
+        split = box.split(factor=0.42)
+        split.prop(st, "use_symmetry")
+        sub = split.row(align=True)
+        sub.active = st.use_symmetry
+        sub.prop(st, "symmetry_axis", expand=True)
+
+        box = layout.box()
         box.label(text="Edge Flow Guides", icon='GP_SELECT_STROKES')
         box.prop(st, "use_guides")
         sub = box.column(align=True)
