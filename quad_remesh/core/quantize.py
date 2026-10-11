@@ -20,8 +20,8 @@ from .geom import dot, normalize
 from .orientation import match4
 from .polymesh import PolyMesh, ekey
 
-MERGE_COST = float(__import__("os").environ.get("QR_MERGE_COST", "2"))
-SPLIT_COST = float(__import__("os").environ.get("QR_SPLIT_COST", "2"))
+MERGE_COST = 2.0   # extra path cost for merging two lattice points
+SPLIT_COST = 2.0   # extra path cost for splitting one
 _UNITS = ((1, 0), (0, 1), (-1, 0), (0, -1))
 _UIDX = {u: k for k, u in enumerate(_UNITS)}
 
@@ -440,11 +440,7 @@ def rebuild(lat, n):
                     add(c, (o1[0] + o[0], o1[1] + o[1]), e2, (r1 + r2) % 4)
     faces = []
     seen = set()
-    stats = Counter()
-    rep_v = np.zeros(nc, dtype=np.int64)
-    rep_v[cl[::-1]] = np.arange(n)[::-1]
     for c in range(nc):
-        stats["deg%d" % len(nbr[c])] += 1
         for k in range(4):
             cyc = [c]
             cur, acc = c, 0
@@ -454,26 +450,15 @@ def rebuild(lat, n):
                 kk = _UIDX[d]
                 if kk not in nbr[cur]:
                     ok = False
-                    stats["missing"] += 1
                     break
                 nxt, rc = nbr[cur][kk]
                 acc = (acc + rc) % 4
                 cur = nxt
                 cyc.append(cur)
-            if not ok:
-                continue
-            if cyc[-1] != c:
-                stats["notclosed"] += 1
-                if __import__("os").environ.get("QR_DEBUG_WALK") and stats["notclosed"] <= 6:
-                    vs = [rep_v[x] for x in cyc]
-                    q0 = lat.Q[vs[0]]; t0 = np.cross(lat.N[vs[0]], q0); h0 = lat.H[vs[0]]
-                    rel_pos = [(round(float(np.dot(lat.V[v] - lat.V[vs[0]], q0) / h0), 2),
-                                round(float(np.dot(lat.V[v] - lat.V[vs[0]], t0) / h0), 2)) for v in vs]
-                    print("  walk", k, "cyc", cyc, "pos", rel_pos, "nbr0", {kk: v[0] for kk, v in nbr[c].items()})
+            if not ok or cyc[-1] != c:
                 continue
             quad = cyc[:4]
             if len(set(quad)) != 4:
-                stats["repeat"] += 1
                 continue
             key = frozenset(quad)
             if key in seen:
@@ -485,12 +470,9 @@ def rebuild(lat, n):
     for f in faces:
         hes = [(f[i], f[(i + 1) % 4]) for i in range(4)]
         if any(he in used for he in hes):
-            stats["nonmanifold"] += 1
             continue
         used.update(hes)
         out.append(f)
-    if __import__("os").environ.get("QR_DEBUG_COARSE"):
-        print("[rebuild]", dict(stats))
     unit_edges = {ekey(c, d) for c in range(nc) for (d, _r) in nbr[c].values()}
     return cl, nc, out, unit_edges
 
@@ -550,48 +532,6 @@ def solve_positions(lat, V, cl, nc, anchor=0.05, iters=400):
     return x
 
 
-def quantize(pm, VQ, VN, H):
-    """Return a new PolyMesh with lattice dislocations removed (or the input
-    PolyMesh unchanged if nothing could be improved)."""
-    n = len(pm.V)
-    tris = triangulate(pm.V, pm.faces)
-    edges = {ekey(f[k], f[(k + 1) % 3]) for f in tris for k in range(3)}
-    Q = comb(VQ, VN, list(edges), n)
-    lat = CoarseLattice(pm.V, VN, Q, H, tris, pm.feature_edges)
-    folds0 = lat.folded()
-    initial, remaining = cancel_charges(lat)
-    if __import__("os").environ.get("QR_DEBUG_COARSE"):
-        print(f"[quantize] folded triangles before {folds0} after {lat.folded()}")
-    if initial == 0 or remaining >= initial:
-        return pm, (initial, remaining)
-    cl, nc, faces = rebuild(lat, n)
-    if __import__("os").environ.get("QR_DEBUG_COARSE"):
-        tz = sum(1 for x in lat.t if x == (0, 0))
-        big = sum(1 for x in lat.t if abs(x[0]) > 1 or abs(x[1]) > 1)
-        print(f"[quantize] charges {initial}->{remaining} verts {n}->{nc} faces in {len(pm.faces)} out {len(faces)} "
-              f"zero-edges {tz} big-edges {big} singular {sum(lat.singular)}")
-    P = solve_positions(lat, pm.V, cl, nc)
-
-    def agg(flags):
-        f = np.zeros(nc, bool)
-        f[cl[flags]] = True
-        return f
-
-    comp = np.zeros(nc, dtype=np.int64)
-    comp[cl] = pm.comp
-    corner = agg(pm.corner)
-    cpos = np.zeros((nc, 3))
-    cpos[cl[pm.corner]] = pm.V[pm.corner]
-    P[corner] = cpos[corner]
-    fe = set()
-    for a, b in pm.feature_edges:
-        ca, cb = cl[a], cl[b]
-        if ca != cb:
-            fe.add(ekey(int(ca), int(cb)))
-    out = PolyMesh(P, faces, agg(pm.feat), corner, agg(pm.bnd), fe, comp)
-    return out, (initial, remaining)
-
-
 def _fill_with_traced(P, VN, faces, unit_edges, bnd, max_len=10):
     """Cover what the combinatorial cell walk missed (around singularities)
     with faces traced geometrically on the lattice-neighbour graph."""
@@ -629,9 +569,8 @@ def quantize_fine(mesh, N, Q, O, H, feature_edge_mask, is_feature, is_corner, is
     locked = {tuple(e) for e in mesh.edges[feature_edge_mask].tolist()}
     Qc = comb(Q, N, mesh.edges.tolist(), n)
     lat = CoarseLattice(O, N, Qc, H, tris, locked)
-    folds0 = lat.folded()
     if max_cost is None:
-        max_cost = float(__import__("os").environ.get("QR_REACH", "100")) * float(np.mean(H)) / max(float(mesh.edge_length.mean()), 1e-12)
+        max_cost = 100.0 * float(np.mean(H)) / max(float(mesh.edge_length.mean()), 1e-12)
     initial, remaining = cancel_charges(lat, max_cost=max_cost)
     cl, nc, faces, unit_edges = rebuild(lat, n)
     P = solve_positions(lat, O, cl, nc)
@@ -639,9 +578,6 @@ def quantize_fine(mesh, N, Q, O, H, feature_edge_mask, is_feature, is_corner, is
     bnd0 = np.zeros(nc, bool)
     bnd0[cl[is_boundary]] = True
     faces = _fill_with_traced(P, VN0, faces, unit_edges, bnd0)
-    if __import__("os").environ.get("QR_DEBUG_COARSE"):
-        print(f"[quantize_fine] charges {initial}->{remaining} folds {folds0}->{lat.folded()} "
-              f"clusters {nc} faces {len(faces)}")
     cnt = np.bincount(cl, minlength=nc).astype(np.float64)
     VN = normalize(np.stack([np.bincount(cl, weights=N[:, k], minlength=nc) for k in range(3)], 1))
 

@@ -107,10 +107,7 @@ def _apply_constraints(O, P, N, line_mask, line_pt, line_dir, corner_mask, corne
     return O
 
 
-def solve_position(levels, Q, h, line_mask, line_dir, corner_mask, iters_coarse=None, iters_fine=None):
-    import os as _os
-    iters_coarse = iters_coarse or int(_os.environ.get("QR_PIC", "30"))
-    iters_fine = iters_fine or int(_os.environ.get("QR_PIF", "40"))
+def solve_position(levels, Q, h, line_mask, line_dir, corner_mask, iters_coarse=30, iters_fine=40):
     """Generator; yields progress and returns (lattice origins, field) at the fine level."""
     nlev = len(levels)
     Qs = _restrict_q(levels, Q)

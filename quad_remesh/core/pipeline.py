@@ -92,14 +92,6 @@ def guide_constraints(mesh, guides, radius, strength):
     return soft_mask, soft_dir, soft_w, hard_mask
 
 
-def _dbg(pm, tag):
-    if not __import__("os").environ.get("QR_DEBUG_STAGES"):
-        return
-    m = metrics.compute(pm.V, pm.faces)
-    print(f"  [{tag}] faces {m['faces']} tris {m['tris']} ngons {m['ngons']} v3 {m['v3']} v5 {m['v5']} "
-          f"v6+ {m['v6plus']} bnd {m['boundary_edges']} nm {m['nonmanifold_edges']}")
-
-
 def remesh(V, F, params):
     h = float(params.target_edge)
     scale = 2.0 * h if params.pure_quads else h
@@ -218,21 +210,17 @@ def _finish(ctx, quantized, p0, p1):
     pm.V[on_surf], _ = surf.project(pm.V[on_surf], pm.comp[on_surf], pm.vertex_normals()[on_surf])
 
     yield ("Fixing irregular faces", prog(0.25))
-    _dbg(pm, "extracted")
     quadify.fill_holes(pm)
     quadify.mark_feature_edges(pm, seg)
-    _dbg(pm, "filled")
     quadify.dissolve_valence2(pm)
     quadify.pair_odd_faces(pm, max_depth=6)
     quadify.split_even_ngons(pm)
-    _dbg(pm, "paired")
     if params.cleanup:
         cleanup.edge_rotation(pm)
         cleanup.diagonal_collapse(pm)
         quadify.dissolve_valence2(pm)
         quadify.pair_odd_faces(pm)
     pm.compact()
-    _dbg(pm, "cleaned")
     pm.V = relax(pm.V, pm.faces, scale, surf, seg, pm.feat, pm.corner, iterations=4, comp=pm.comp,
                  size_fn=size_at)
 
@@ -242,8 +230,6 @@ def _finish(ctx, quantized, p0, p1):
         pm = quadify.subdivide(pm)
     else:
         quadify.split_odd_ngons(pm)
-
-    _dbg(pm, "subdivided")
     yield ("Relaxing", prog(0.55))
 
     def final_size(pts):
@@ -260,8 +246,6 @@ def _finish(ctx, quantized, p0, p1):
     pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner,
                  iterations=max(1, params.relax_iterations - params.relax_iterations // 2), comp=pm.comp,
                  size_fn=final_size)
-
-    _dbg(pm, "final-clean")
     if params.untangle:
         yield ("Untangling", prog(0.9))
         pm.V = untangle(pm.V, pm.faces, surf, seg, pm.feat, pm.corner, pm.comp)

@@ -168,6 +168,12 @@ def write_result(context, src, V_world, faces, feature_edges=()):
     if src.type == 'MESH':
         for mat in src.data.materials:
             me.materials.append(mat)
+        polys = src.data.polygons
+        if len(polys):
+            smooth = np.empty(len(polys), dtype=bool)
+            polys.foreach_get("use_smooth", smooth)
+            if smooth.mean() > 0.5:
+                me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), dtype=bool))
 
     ob = _find_result(src)
     if ob is not None:
