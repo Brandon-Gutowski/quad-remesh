@@ -37,11 +37,13 @@ def compat_pair(Pi, Ni, Qi, Ti, Oi, Pj, Nj, Qj, Tj, Oj, h):
     edge midpoint. Returns (point of i's lattice, point of j's lattice)."""
     mid = middle_point(Pi, Ni, Pj, Nj)
     base = floor4(Oi, Qi, Ti, mid, h)
+    hh = np.asarray(h, dtype=np.float64)
+    hc = hh[:, None] if hh.ndim else hh
     best_cost = np.full(len(Pi), np.inf)
     bi = base.copy()
     bj = base.copy()
     for cx, cy in _CORNERS:
-        c = base + Qi * (cx * h) + Ti * (cy * h)
+        c = base + Qi * (cx * hc) + Ti * (cy * hc)
         cj = round4(Oj, Qj, Tj, c, h)
         d = cj - c
         cost = dot(d, d)
@@ -52,13 +54,14 @@ def compat_pair(Pi, Ni, Qi, Ti, Oi, Pj, Nj, Qj, Tj, Oj, h):
     return bi, bj
 
 
-def _gs_sweep(P, N, Q, T, O, ej, indptr, slots, h):
+def _gs_sweep(P, N, Q, T, O, ej, indptr, slots, hv):
     """One smoothing sweep: every vertex folds in its neighbours one at a time
     (running average, as in Instant Meshes), vectorized across vertices."""
     S = O.copy()
     for k, i in enumerate(slots):
         j = ej[indptr[i] + k]
-        a, b = compat_pair(P[i], N[i], Q[i], T[i], S[i], P[j], N[j], Q[j], T[j], O[j], h)
+        he = 0.5 * (hv[i] + hv[j])
+        a, b = compat_pair(P[i], N[i], Q[i], T[i], S[i], P[j], N[j], Q[j], T[j], O[j], he)
         s = (a * k + b) / (k + 1.0)
         S[i] = s - N[i] * dot(N[i], s - P[i])[:, None]
     return S
@@ -94,12 +97,18 @@ def solve_position(levels, Q, h, line_mask, line_dir, corner_mask, iters_coarse=
     nlev = len(levels)
     Qs = _restrict_q(levels, Q)
     P0 = levels[0].P
+    hs = [np.broadcast_to(np.asarray(h, dtype=np.float64), (levels[0].n,)).copy()]
+    for L in levels[:-1]:
+        nc = int(L.parent.max()) + 1
+        w = np.bincount(L.parent, weights=L.A * hs[-1], minlength=nc)
+        hs.append(w / np.bincount(L.parent, weights=L.A, minlength=nc))
     lm, lv = restrict_pick(levels, line_mask, np.concatenate([P0, line_dir], 1))
     cm, cv = restrict_pick(levels, corner_mask, P0)
     O = None
     for li in range(nlev - 1, -1, -1):
         L = levels[li]
         P, N = L.P, L.N
+        hv = hs[li]
         Ql = normalize(Qs[li] - N * dot(Qs[li], N)[:, None])
         Tl = np.cross(N, Ql)
         line_m = lm[li] & ~cm[li]
@@ -109,15 +118,15 @@ def solve_position(levels, Q, h, line_mask, line_dir, corner_mask, iters_coarse=
         else:
             Oc = O[L.parent]
             O = Oc - N * dot(N, Oc - P)[:, None]
-            O = round4(O, Ql, Tl, P, h)
+            O = round4(O, Ql, Tl, P, hv)
         O = _apply_constraints(O, P, N, line_m, line_pt, line_d, cm[li], cv[li])
         indptr = np.concatenate([[0], np.cumsum(np.bincount(L.ei, minlength=L.n))])
         deg = np.diff(indptr)
         slots = [np.nonzero(deg > k)[0] for k in range(int(deg.max()) if len(deg) else 0)]
         iters = iters_fine if li == 0 else iters_coarse
         for it in range(iters):
-            O = _gs_sweep(P, N, Ql, Tl, O, L.ej, indptr, slots, h)
-            O = round4(O, Ql, Tl, P, h)
+            O = _gs_sweep(P, N, Ql, Tl, O, L.ej, indptr, slots, hv)
+            O = round4(O, Ql, Tl, P, hv)
             O = _apply_constraints(O, P, N, line_m, line_pt, line_d, cm[li], cv[li])
             if it % 5 == 0:
                 yield (nlev - 1 - li + it / iters) / nlev

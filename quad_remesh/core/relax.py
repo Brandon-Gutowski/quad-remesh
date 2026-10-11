@@ -47,7 +47,7 @@ def _vertex_normals(V, groups, n):
 
 
 def relax(V, faces, target, surf_proj, seg_proj, feat, corner, iterations=10, step=0.6,
-          lap_weight=0.25, local_mix=0.25, comp=None):
+          lap_weight=0.25, local_mix=0.25, comp=None, size_fn=None):
     V = np.array(V, dtype=np.float64)
     groups = _group_faces(faces)
     n = len(V)
@@ -73,7 +73,8 @@ def relax(V, faces, target, surf_proj, seg_proj, feat, corner, iterations=10, st
         for m, F in groups.items():
             P = V[F]
             edge = np.linalg.norm(P - np.roll(P, -1, axis=1), axis=2).mean(1)
-            size = (1.0 - local_mix) * target + local_mix * edge
+            tgt_size = target if size_fn is None else size_fn(P.mean(1))
+            size = (1.0 - local_mix) * tgt_size + local_mix * edge
             T = _regular_targets(V, F, size)
             for k in range(m):
                 np.add.at(acc, F[:, k], T[:, k])

@@ -33,7 +33,7 @@ def _bounded_clusters(n, a, b, err, O, radius):
     sx = O[:, 0].tolist()
     sy = O[:, 1].tolist()
     sz = O[:, 2].tolist()
-    r2 = radius * radius
+    rad = np.broadcast_to(np.asarray(radius, dtype=np.float64), (n,)).tolist()
 
     def find(x):
         root = x
@@ -54,7 +54,8 @@ def _bounded_clusters(n, a, b, err, O, radius):
         dx = sx[rx] / cx - sx[ry] / cy
         dy = sy[rx] / cx - sy[ry] / cy
         dz = sz[rx] / cx - sz[ry] / cy
-        if dx * dx + dy * dy + dz * dz > r2:
+        rr = 0.5 * (rad[rx] + rad[ry])
+        if dx * dx + dy * dy + dz * dz > rr * rr:
             continue
         if cx < cy:
             rx, ry = ry, rx
@@ -128,6 +129,8 @@ def trace_faces(VP, VN, ea, eb, max_len=12):
 
 def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, vcomp=None, max_face=12):
     i, j = edges[:, 0], edges[:, 1]
+    hv = np.broadcast_to(np.asarray(h, dtype=np.float64), (len(P),))
+    h = 0.5 * (hv[i] + hv[j])
     T = np.cross(N, Q)
     # Lattice points of i and j closest to each other near the edge midpoint.
     a, b = compat_pair(P[i], N[i], Q[i], T[i], O[i], P[j], N[j], Q[j], T[j], O[j], h)
@@ -143,7 +146,7 @@ def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, vcomp
     unit = (l1 == 1) & (err < 0.5 * h)
 
     n = len(P)
-    lab = _bounded_clusters(n, i[zero], j[zero], err[zero], O, 0.5 * h)
+    lab = _bounded_clusters(n, i[zero], j[zero], err[zero], O, 0.5 * hv)
     _, cl = np.unique(lab, return_inverse=True)
     cl = cl.reshape(-1)
     nc = int(cl.max()) + 1
@@ -162,6 +165,10 @@ def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, vcomp
     c_comp = np.zeros(nc, dtype=np.int64)
     if vcomp is not None:
         c_comp[cl] = vcomp
+    VQ = np.zeros((nc, 3))
+    VQ[cl] = Q
+    VQ = normalize(VQ - VN * dot(VQ, VN)[:, None])
+    hc = np.bincount(cl, weights=hv, minlength=nc) / cnt
     corner_pos = np.zeros((nc, 3))
     corner_pos[cl[is_corner]] = P[is_corner]
     VP[c_corner] = corner_pos[c_corner]
@@ -178,7 +185,7 @@ def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, vcomp
     k = uk[votes_unit > 0.5 * votes_all]
     ea, eb = k // nc, k % nc
     L = np.linalg.norm(VP[ea] - VP[eb], axis=1)
-    good = L < 1.9 * h
+    good = L < 0.95 * (hc[ea] + hc[eb])
     ea, eb = _prune_low_degree(nc, ea[good], eb[good])
 
     faces = trace_faces(VP, VN, ea, eb, max_len=max_face)
@@ -192,4 +199,4 @@ def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, vcomp
         if np.dot(nn, VN[f].sum(0)) < 0:
             continue
         kept.append(f)
-    return VP, VN, kept, c_feat, c_corner, c_bnd, c_comp
+    return VP, VN, kept, c_feat, c_corner, c_bnd, c_comp, VQ, hc

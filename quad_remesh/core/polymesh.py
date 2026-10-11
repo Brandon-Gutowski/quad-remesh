@@ -16,6 +16,7 @@ class PolyMesh:
         self.bnd = np.asarray(bnd, bool).copy()
         self.feature_edges = set(feature_edges or ())
         self.comp = np.zeros(len(self.V), dtype=np.int64) if comp is None else np.asarray(comp, dtype=np.int64).copy()
+        self.attrs = {}  # extra per-vertex arrays kept in sync by compact()
 
     # -- connectivity ---------------------------------------------------------
     def edge_faces(self):
@@ -68,6 +69,7 @@ class PolyMesh:
         self.corner = self.corner[used]
         self.bnd = self.bnd[used]
         self.comp = self.comp[used]
+        self.attrs = {k: v[used] for k, v in self.attrs.items()}
         self.faces = [[int(remap[v]) for v in f] for f in self.faces]
         self.feature_edges = {ekey(int(remap[a]), int(remap[b])) for a, b in self.feature_edges
                               if used[a] and used[b]}

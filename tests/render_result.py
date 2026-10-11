@@ -21,7 +21,16 @@ V, F = getattr(meshes, name)()
 t = V[F]
 area = 0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum()
 h = math.sqrt(area) / density
-if "source" in argv:
+load = [a[5:] for a in argv if a.startswith("load=")]
+if load:
+    dat = np.load(load[0])
+    class _R: pass
+    res = _R(); res.V = dat["V"]
+    res.faces = [list(dict.fromkeys(f)) for f in dat["F"].tolist()]
+    V, F = dat["SV"], dat["SF"]
+    res.metrics = metrics.compute(res.V, res.faces)
+    sing_pts = dat["sing"] if "sing" in dat else []
+elif "source" in argv:
     class _R: pass
     res = _R(); res.V = V; res.faces = F.tolist()
     res.metrics = metrics.compute(V, res.faces)
@@ -45,7 +54,7 @@ def color_faces(ob):
     pass
 
 from quad_remesh.core.spatial import SurfaceProjector
-bad = set(metrics.flipped_faces(res.V, res.faces, SurfaceProjector(V, F))) if "source" not in argv else set()
+bad = set(metrics.flipped_faces(res.V, res.faces, SurfaceProjector(V, F))) if not ("source" in argv or load) else set()
 good_f = [list(map(int, f)) for i, f in enumerate(res.faces) if i not in bad]
 bad_f = [list(map(int, f)) for i, f in enumerate(res.faces) if i in bad]
 solid = add("solid", res.V, good_f, (0.85, 0.85, 0.85, 1))
@@ -77,6 +86,15 @@ for vv, col in ((3, (0.1, 0.4, 1.0, 1)), (5, (1.0, 0.2, 0.1, 1)), (6, (1, 0, 1, 
             if i:
                 sc.collection.objects.link(o)
             o.location = Vector(res.V[vi])
+if load and len(sing_pts):
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=h * 0.35, segments=8, ring_count=4)
+    proto = bpy.context.active_object
+    proto.color = (0.1, 1.0, 0.2, 1)
+    for i, p in enumerate(sing_pts):
+        o = proto if i == 0 else proto.copy()
+        if i:
+            sc.collection.objects.link(o)
+        o.location = Vector(p)
 # source ghost for comparison
 src = add("src", V, F.tolist(), (1.0, 0.6, 0.2, 1))
 src.display_type = 'WIRE'

@@ -15,6 +15,8 @@ from .orientation import solve_orientation
 from .polymesh import PolyMesh
 from .position import solve_position
 from .relax import relax, untangle
+from .scale import scale_field
+from .quantize import quantize_fine
 from .spatial import PointIndex, SegmentProjector, SurfaceProjector
 
 
@@ -30,6 +32,8 @@ class Params:
     relax_iterations: int = 12
     cleanup: bool = True
     untangle: bool = True
+    size_flexibility: float = 0.0
+    quantize: bool = True
 
 
 @dataclass
@@ -129,7 +133,14 @@ def remesh(V, F, params):
             Q = stop.value
             break
 
-    gen = solve_position(levels, Q, scale, line_mask, feats.tangent, feats.is_corner)
+    yield ("Fitting quad sizes", 0.35)
+    hv = scale_field(mesh, N, Q, scale, params.size_flexibility)
+    index = PointIndex(mesh.V)
+
+    def size_at(pts, factor=1.0):
+        return np.array([hv[index.nearest(p)] for p in pts]) * factor
+
+    gen = solve_position(levels, Q, hv, line_mask, feats.tangent, feats.is_corner)
     while True:
         try:
             p = next(gen)
@@ -138,13 +149,18 @@ def remesh(V, F, params):
             O, Q = stop.value
             break
 
-    yield ("Extracting quads", 0.66)
-    VP, VN, faces, c_feat, c_corner, c_bnd, c_comp = extract_mesh(
-        mesh.V, N, Q, O, mesh.edges, scale,
-        feats.is_feature, feats.is_corner, feats.is_boundary, vcomp)
+    yield ("Extracting quads", 0.67)
+    if params.quantize:
+        VP, VN, faces, c_feat, c_corner, c_bnd, c_comp, VQ, hc, _q = quantize_fine(
+            mesh, N, Q, O, hv, feats.edge_mask, feats.is_feature, feats.is_corner, feats.is_boundary, vcomp)
+    else:
+        VP, VN, faces, c_feat, c_corner, c_bnd, c_comp, VQ, hc = extract_mesh(
+            mesh.V, N, Q, O, mesh.edges, hv,
+            feats.is_feature, feats.is_corner, feats.is_boundary, vcomp)
     if not faces:
         raise ValueError("Extraction produced no faces; try a lower density")
     pm = PolyMesh(VP, faces, c_feat, c_corner, c_bnd, comp=c_comp)
+    pm.attrs = {"N": VN, "Q": VQ, "H": hc}
     pm.compact()
     snap = pm.feat & ~pm.corner
     if seg is not None and snap.any():
@@ -164,7 +180,8 @@ def remesh(V, F, params):
         quadify.dissolve_valence2(pm)
         quadify.pair_odd_faces(pm)
     pm.compact()
-    pm.V = relax(pm.V, pm.faces, scale, surf, seg, pm.feat, pm.corner, iterations=4, comp=pm.comp)
+    pm.V = relax(pm.V, pm.faces, scale, surf, seg, pm.feat, pm.corner, iterations=4, comp=pm.comp,
+                 size_fn=size_at)
 
     if params.pure_quads:
         yield ("Subdividing to pure quads", 0.8)
@@ -174,7 +191,8 @@ def remesh(V, F, params):
 
     yield ("Relaxing", 0.85)
     pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner,
-                 iterations=max(1, params.relax_iterations // 2), comp=pm.comp)
+                 iterations=max(1, params.relax_iterations // 2), comp=pm.comp,
+                 size_fn=lambda pts: size_at(pts, h / scale))
     if params.cleanup:
         cleanup.edge_rotation(pm)
         cleanup.diagonal_collapse(pm)
@@ -182,7 +200,8 @@ def remesh(V, F, params):
         quadify.pair_odd_faces(pm, max_depth=1)
         pm.compact()
     pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner,
-                 iterations=max(1, params.relax_iterations - params.relax_iterations // 2), comp=pm.comp)
+                 iterations=max(1, params.relax_iterations - params.relax_iterations // 2), comp=pm.comp,
+                 size_fn=lambda pts: size_at(pts, h / scale))
 
     if params.untangle:
         pm.V = untangle(pm.V, pm.faces, surf, seg, pm.feat, pm.corner, pm.comp)
