@@ -8,13 +8,14 @@ def ekey(a, b):
 
 
 class PolyMesh:
-    def __init__(self, V, faces, feat, corner, bnd, feature_edges=None):
+    def __init__(self, V, faces, feat, corner, bnd, feature_edges=None, comp=None):
         self.V = np.asarray(V, dtype=np.float64)
         self.faces = [list(f) for f in faces]
         self.feat = np.asarray(feat, bool).copy()
         self.corner = np.asarray(corner, bool).copy()
         self.bnd = np.asarray(bnd, bool).copy()
         self.feature_edges = set(feature_edges or ())
+        self.comp = np.zeros(len(self.V), dtype=np.int64) if comp is None else np.asarray(comp, dtype=np.int64).copy()
 
     # -- connectivity ---------------------------------------------------------
     def edge_faces(self):
@@ -53,6 +54,7 @@ class PolyMesh:
         self.feat = np.append(self.feat, feat)
         self.corner = np.append(self.corner, corner)
         self.bnd = np.append(self.bnd, bnd)
+        self.comp = np.append(self.comp, self.comp[0] if len(self.comp) else 0)
         return len(self.V) - 1
 
     def compact(self):
@@ -65,9 +67,21 @@ class PolyMesh:
         self.feat = self.feat[used]
         self.corner = self.corner[used]
         self.bnd = self.bnd[used]
+        self.comp = self.comp[used]
         self.faces = [[int(remap[v]) for v in f] for f in self.faces]
         self.feature_edges = {ekey(int(remap[a]), int(remap[b])) for a, b in self.feature_edges
                               if used[a] and used[b]}
 
     def face_sizes(self):
         return np.array([len(f) for f in self.faces if f is not None])
+
+    def vertex_normals(self):
+        n = np.zeros_like(self.V)
+        for f in self.faces:
+            if f is None or len(f) < 3:
+                continue
+            P = self.V[f]
+            fn = np.cross(P - P.mean(0), np.roll(P, -1, axis=0) - P.mean(0)).sum(0)
+            n[f] += fn
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        return n / np.maximum(ln, 1e-30)

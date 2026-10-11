@@ -24,6 +24,48 @@ def _components(n, a, b):
     return lab
 
 
+def _bounded_clusters(n, a, b, err, O, radius):
+    """Union-find over zero-offset edges in order of increasing error; a merge
+    is refused when it would put the two cluster centroids more than `radius`
+    apart, so clusters never drift across lattice cells."""
+    parent = list(range(n))
+    cnt = [1] * n
+    sx = O[:, 0].tolist()
+    sy = O[:, 1].tolist()
+    sz = O[:, 2].tolist()
+    r2 = radius * radius
+
+    def find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    order = np.argsort(err, kind="stable")
+    al = a[order].tolist()
+    bl = b[order].tolist()
+    for x, y in zip(al, bl):
+        rx, ry = find(x), find(y)
+        if rx == ry:
+            continue
+        cx, cy = cnt[rx], cnt[ry]
+        dx = sx[rx] / cx - sx[ry] / cy
+        dy = sy[rx] / cx - sy[ry] / cy
+        dz = sz[rx] / cx - sz[ry] / cy
+        if dx * dx + dy * dy + dz * dz > r2:
+            continue
+        if cx < cy:
+            rx, ry = ry, rx
+        parent[ry] = rx
+        cnt[rx] += cnt[ry]
+        sx[rx] += sx[ry]
+        sy[rx] += sy[ry]
+        sz[rx] += sz[ry]
+    return np.array([find(x) for x in range(n)])
+
+
 def _prune_low_degree(n, ea, eb):
     while True:
         deg = np.bincount(np.concatenate([ea, eb]), minlength=n)
@@ -84,7 +126,7 @@ def trace_faces(VP, VN, ea, eb, max_len=12):
     return faces
 
 
-def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, max_face=12):
+def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, vcomp=None, max_face=12):
     i, j = edges[:, 0], edges[:, 1]
     T = np.cross(N, Q)
     # Lattice points of i and j closest to each other near the edge midpoint.
@@ -101,7 +143,7 @@ def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, max_f
     unit = (l1 == 1) & (err < 0.5 * h)
 
     n = len(P)
-    lab = _components(n, i[zero], j[zero])
+    lab = _bounded_clusters(n, i[zero], j[zero], err[zero], O, 0.5 * h)
     _, cl = np.unique(lab, return_inverse=True)
     cl = cl.reshape(-1)
     nc = int(cl.max()) + 1
@@ -117,6 +159,9 @@ def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, max_f
     c_feat = any_flag(is_feature)
     c_corner = any_flag(is_corner)
     c_bnd = any_flag(is_boundary)
+    c_comp = np.zeros(nc, dtype=np.int64)
+    if vcomp is not None:
+        c_comp[cl] = vcomp
     corner_pos = np.zeros((nc, 3))
     corner_pos[cl[is_corner]] = P[is_corner]
     VP[c_corner] = corner_pos[c_corner]
@@ -147,4 +192,4 @@ def extract_mesh(P, N, Q, O, edges, h, is_feature, is_corner, is_boundary, max_f
         if np.dot(nn, VN[f].sum(0)) < 0:
             continue
         kept.append(f)
-    return VP, VN, kept, c_feat, c_corner, c_bnd
+    return VP, VN, kept, c_feat, c_corner, c_bnd, c_comp

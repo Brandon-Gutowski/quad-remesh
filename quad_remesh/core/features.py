@@ -8,7 +8,8 @@ from .geom import dot, normalize
 
 
 class Features:
-    def __init__(self, mesh, sharp_angle=None, marked_pairs=None, corner_angle=math.radians(35.0)):
+    def __init__(self, mesh, sharp_angle=None, marked_pairs=None, corner_angle=math.radians(35.0),
+                 scale=None):
         n = len(mesh.V)
         E = mesh.edges
         cnt = mesh.edge_face_count
@@ -24,6 +25,8 @@ class Features:
         if marked_pairs is not None and len(marked_pairs):
             idx = mesh.edge_index(marked_pairs)
             mask[idx[idx >= 0]] = True
+        if scale is not None:
+            mask = _drop_short_chains(E, mesh.edge_length, mask, self.boundary_edge, 0.5 * scale)
         self.edge_mask = mask
 
         fe = E[mask]
@@ -63,9 +66,69 @@ class Features:
             d2 = normalize(V[b] - V[two])
             turn = dot(d1, d2) < math.cos(corner_angle)
             corner[two[turn]] = True
+        if scale is not None and corner.any():
+            corner = _thin_corners(V, corner, vc, 0.5 * scale)
         self.is_corner = corner
         self.segments = np.stack([V[fe[:, 0]], V[fe[:, 1]]], 1) if len(fe) else np.zeros((0, 2, 3))
 
     @property
     def any(self):
         return bool(len(self.feature_edges))
+
+
+def _edge_chains(E, mask):
+    """Label feature edges by chain (chains break at vertices of feature valence != 2)."""
+    idx = np.nonzero(mask)[0]
+    fe = E[idx]
+    n = int(E.max()) + 1 if len(E) else 0
+    vc = np.bincount(fe.reshape(-1), minlength=n)
+    # half-edges sorted by vertex: consecutive pairs at valence-2 vertices link edges
+    hv = np.concatenate([fe[:, 0], fe[:, 1]])
+    he = np.concatenate([np.arange(len(fe)), np.arange(len(fe))])
+    order = np.argsort(hv, kind="stable")
+    hv, he = hv[order], he[order]
+    v2 = np.nonzero(vc == 2)[0]
+    first = np.searchsorted(hv, v2)
+    a, b = he[first], he[first + 1]
+    lab = np.arange(len(fe))
+    while len(a):
+        m = np.minimum(lab[a], lab[b])
+        new = lab.copy()
+        np.minimum.at(new, a, m)
+        np.minimum.at(new, b, m)
+        new = new[new]
+        if np.array_equal(new, lab):
+            break
+        lab = new
+    return idx, lab
+
+
+def _drop_short_chains(E, length, mask, protected, min_len, rounds=4):
+    mask = mask.copy()
+    for _ in range(rounds):
+        idx, lab = _edge_chains(E, mask)
+        if not len(idx):
+            break
+        tot = np.bincount(lab, weights=length[idx], minlength=len(idx))
+        prot = np.bincount(lab, weights=protected[idx].astype(float), minlength=len(idx)) > 0
+        short = (tot[lab] < min_len) & ~prot[lab]
+        if not short.any():
+            break
+        mask[idx[short]] = False
+    return mask
+
+
+def _thin_corners(V, corner, vc, radius):
+    """Keep corners at least `radius` apart, preferring higher feature valence."""
+    cand = np.nonzero(corner)[0]
+    order = cand[np.lexsort((cand, -vc[cand]))]
+    kept = []
+    out = np.zeros_like(corner)
+    for c in order:
+        if kept:
+            d = np.linalg.norm(V[kept] - V[c], axis=1)
+            if d.min() < radius:
+                continue
+        kept.append(c)
+        out[c] = True
+    return out

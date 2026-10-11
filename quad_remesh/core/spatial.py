@@ -7,27 +7,58 @@ from mathutils.kdtree import KDTree
 
 
 class SurfaceProjector:
-    """Closest point on the source triangle surface."""
+    """Closest point on the source triangle surface.
 
-    def __init__(self, V, F):
-        self.tree = BVHTree.FromPolygons([tuple(v) for v in V], [tuple(f) for f in F], all_triangles=True)
+    With per-face component labels, points are only projected onto their own
+    connected component (so e.g. eyeballs and head never trade vertices). With
+    normals, hits on the far side of thin parts are rejected in favour of a ray
+    cast along the normal.
+    """
 
-    def project(self, P):
+    def __init__(self, V, F, face_comp=None):
+        V = np.asarray(V)
+        F = np.asarray(F)
+        if face_comp is None:
+            face_comp = np.zeros(len(F), dtype=np.int64)
+        self.trees = {}
+        for c in np.unique(face_comp):
+            Fc = F[face_comp == c]
+            self.trees[int(c)] = BVHTree.FromPolygons([tuple(v) for v in V], [tuple(f) for f in Fc],
+                                                       all_triangles=True)
+        self.default = int(np.bincount(face_comp).argmax()) if len(face_comp) else 0
+
+    def project(self, P, comps=None, normals=None):
         out = np.array(P, dtype=np.float64, copy=True)
         nrm = np.zeros_like(out)
-        find = self.tree.find_nearest
         for i, p in enumerate(P):
-            hit = find(Vector(p))
-            if hit[0] is not None:
-                out[i] = hit[0]
-                nrm[i] = hit[1]
+            tree = self.trees.get(int(comps[i]) if comps is not None else self.default)
+            if tree is None:
+                tree = self.trees[self.default]
+            pv = Vector(p)
+            loc, n, _idx, _d = tree.find_nearest(pv)
+            if loc is None:
+                continue
+            if normals is not None:
+                nv = Vector(normals[i])
+                if nv.length_squared > 0 and n.dot(nv) < 0.0:
+                    best = None
+                    for direction in (-nv, nv):
+                        hit = tree.ray_cast(pv, direction)
+                        if hit[0] is not None and hit[1].dot(nv) > 0.0:
+                            if best is None or hit[3] < best[3]:
+                                best = hit
+                    if best is not None:
+                        loc, n = best[0], best[1]
+            out[i] = loc
+            nrm[i] = n
         return out, nrm
 
 
 class SegmentProjector:
     """Closest point on a set of 3D line segments (the feature network)."""
 
-    def __init__(self, segments, spacing):
+    def __init__(self, segments, spacing, seg_comp=None):
+        self.seg_comp = np.zeros(len(segments), dtype=np.int64) if seg_comp is None else np.asarray(seg_comp)
         self.A = np.asarray(segments[:, 0], dtype=np.float64)
         self.B = np.asarray(segments[:, 1], dtype=np.float64)
         L = np.linalg.norm(self.B - self.A, axis=1)
@@ -51,7 +82,7 @@ class SegmentProjector:
         k = int(np.argmin(d))
         return C[k], d[k], AB[k]
 
-    def project(self, P, k=6):
+    def project(self, P, k=8, comps=None):
         """Returns (points, distances, segment directions)."""
         P = np.asarray(P, dtype=np.float64)
         out = P.copy()
@@ -62,6 +93,10 @@ class SegmentProjector:
         for i, p in enumerate(P):
             hits = self.kd.find_n(p, k)
             sids = np.unique(self.seg_id[[h[1] for h in hits]])
+            if comps is not None:
+                same = sids[self.seg_comp[sids] == comps[i]]
+                if len(same):
+                    sids = same
             c, d, ab = self._closest_on(p, sids)
             out[i], dist[i], dirs[i] = c, d, ab
         return out, dist, dirs

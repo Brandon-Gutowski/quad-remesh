@@ -49,7 +49,7 @@ def mark_feature_edges(pm, seg_proj):
     E = np.array(cand)
     mid = 0.5 * (pm.V[E[:, 0]] + pm.V[E[:, 1]])
     L = np.linalg.norm(pm.V[E[:, 0]] - pm.V[E[:, 1]], axis=1)
-    _, dist, dirs = seg_proj.project(mid)
+    _, dist, dirs = seg_proj.project(mid, comps=pm.comp[E[:, 0]])
     d = pm.V[E[:, 1]] - pm.V[E[:, 0]]
     cosang = np.abs(np.einsum("ij,ij->i", d, dirs)) / np.maximum(L * np.linalg.norm(dirs, axis=1), 1e-30)
     ok = (dist < 0.25 * L) & (cosang > 0.8)
@@ -233,12 +233,14 @@ def subdivide(pm):
     feat = np.concatenate([pm.feat, efeat, np.zeros(nf, bool)])
     corner = np.concatenate([pm.corner, np.zeros(len(keys) + nf, bool)])
     bnd = np.concatenate([pm.bnd, ebnd, np.zeros(nf, bool)])
+    comp = np.concatenate([pm.comp, pm.comp[E[:, 0]] if len(E) else np.zeros(0, np.int64),
+                           np.array([pm.comp[f[0]] for f in pm.faces], dtype=np.int64)])
     fe = set()
     for k, i in zip(keys, range(len(keys))):
         if efeat[i]:
             fe.add(ekey(k[0], n + i))
             fe.add(ekey(k[1], n + i))
-    return PolyMesh(V, faces, feat, corner, bnd, fe)
+    return PolyMesh(V, faces, feat, corner, bnd, fe, comp)
 
 
 def fill_holes(pm, max_len=12):

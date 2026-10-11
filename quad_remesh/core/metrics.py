@@ -5,7 +5,7 @@ import numpy as np
 from .polymesh import ekey
 
 
-def compute(V, faces, surf_proj=None, sample=4000):
+def compute(V, faces, surf_proj=None, sample=4000, comp=None):
     V = np.asarray(V)
     sizes = np.array([len(f) for f in faces])
     ef = {}
@@ -53,8 +53,9 @@ def compute(V, faces, surf_proj=None, sample=4000):
     }
     if surf_proj is not None and len(V):
         idx = np.linspace(0, len(V) - 1, min(sample, len(V))).astype(int)
-        P, _ = surf_proj.project(V[idx])
+        P, _ = surf_proj.project(V[idx], None if comp is None else comp[idx])
         out["max_dev"] = float(np.linalg.norm(P - V[idx], axis=1).max())
+        out["flipped"] = int(len(flipped_faces(V, faces, surf_proj, comp)))
     return out
 
 
@@ -62,4 +63,21 @@ def summary(m):
     return (f"{m['faces']} faces, {100 * m['quad_ratio']:.1f}% quads "
             f"(tris {m['tris']}, ngons {m['ngons']}) | irregular verts: "
             f"v3={m['v3']} v5={m['v5']} v6+={m['v6plus']} | edge CV {m['edge_cv']:.2f}, "
-            f"angle dev {m['angle_dev']:.1f}°")
+            f"angle dev {m['angle_dev']:.1f}°" + (f" | flipped {m['flipped']}" if m.get('flipped') else ""))
+
+
+def flipped_faces(V, faces, surf_proj, comp=None):
+    """Indices of faces whose normal disagrees with the source surface, or
+    that are folded onto themselves (a corner turning the wrong way)."""
+    bad = []
+    C = np.array([V[f].mean(0) for f in faces])
+    fc = None if comp is None else np.array([comp[f[0]] for f in faces])
+    _, SN = surf_proj.project(C, fc)
+    for fi, f in enumerate(faces):
+        P = V[f]
+        c = C[fi]
+        fn = np.cross(P - c, np.roll(P, -1, axis=0) - c).sum(0)
+        corner_n = np.cross(np.roll(P, -1, axis=0) - P, np.roll(P, 1, axis=0) - P)
+        if np.dot(fn, SN[fi]) <= 0 or (corner_n @ fn <= 0).any():
+            bad.append(fi)
+    return bad
