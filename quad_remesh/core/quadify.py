@@ -196,11 +196,11 @@ def split_even_ngons(pm):
     pm.faces = out
 
 
-def split_odd_ngons(pm):
+def split_odd_ngons(pm, min_size=5):
     existing = set(pm.edge_faces().keys())
     out = []
     for f in pm.faces:
-        if len(f) > 4 and len(f) % 2 == 1:
+        if len(f) >= min_size and len(f) % 2 == 1:
             out.extend(split_odd_with_triangle(f, pm.V, existing))
         else:
             out.append(f)
@@ -244,40 +244,60 @@ def subdivide(pm):
 
 
 def fill_holes(pm, max_len=12):
-    """Close small boundary loops that are not part of the input's real boundary."""
-    out_he = {}
+    """Close small boundary loops that are not part of the input's real
+    boundary. Where several holes touch at a vertex, the shortest loop back
+    to the start is used."""
     he = set()
     for f in pm.faces:
         m = len(f)
         for k in range(m):
             he.add((f[k], f[(k + 1) % m]))
+    out_he = {}
     for a, b in he:
         if (b, a) not in he:
-            # The hole runs b -> a.
-            out_he.setdefault(b, []).append(a)
+            out_he.setdefault(b, []).append(a)   # the hole runs b -> a
     used = set()
     added = 0
-    for start, nxts in list(out_he.items()):
-        for first in nxts:
+    for start in list(out_he.keys()):
+        for first in out_he[start]:
             if (start, first) in used:
                 continue
-            loop = [start]
-            cur, nx = start, first
-            ok = True
-            while True:
-                used.add((cur, nx))
-                if nx == start:
-                    break
-                loop.append(nx)
-                cands = out_he.get(nx, [])
-                if len(cands) != 1 or len(loop) > max_len:
-                    ok = False
-                    break
-                cur, nx = nx, cands[0]
-            if not ok or len(loop) < 3 or len(set(loop)) != len(loop):
+            # BFS over unused hole half-edges for the shortest loop to start
+            prev = {first: start}
+            dq = deque([first])
+            found = False
+            while dq and not found:
+                v = dq.popleft()
+                depth = 0
+                w = v
+                while w != start and depth <= max_len:
+                    w = prev[w]
+                    depth += 1
+                if depth > max_len:
+                    continue
+                for nx in out_he.get(v, []):
+                    if (v, nx) in used:
+                        continue
+                    if nx == start:
+                        prev_start = v
+                        found = True
+                        break
+                    if nx not in prev:
+                        prev[nx] = v
+                        dq.append(nx)
+            if not found:
+                continue
+            loop = [prev_start]
+            while loop[-1] != first:
+                loop.append(prev[loop[-1]])
+            loop.append(start)
+            loop.reverse()          # start, first, ..., prev_start
+            if len(loop) < 3 or len(loop) > max_len or len(set(loop)) != len(loop):
                 continue
             if pm.bnd[loop].sum() > len(loop) // 2:
                 continue
+            for i in range(len(loop)):
+                used.add((loop[i], loop[(i + 1) % len(loop)]))
             pm.faces.append(loop)
             added += 1
     return added

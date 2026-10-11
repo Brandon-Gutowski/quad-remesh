@@ -91,6 +91,14 @@ def guide_constraints(mesh, guides, radius, strength):
     return soft_mask, soft_dir, soft_w, hard_mask
 
 
+def _dbg(pm, tag):
+    if not __import__("os").environ.get("QR_DEBUG_STAGES"):
+        return
+    m = metrics.compute(pm.V, pm.faces)
+    print(f"  [{tag}] faces {m['faces']} tris {m['tris']} ngons {m['ngons']} v3 {m['v3']} v5 {m['v5']} "
+          f"v6+ {m['v6plus']} bnd {m['boundary_edges']} nm {m['nonmanifold_edges']}")
+
+
 def remesh(V, F, params):
     h = float(params.target_edge)
     scale = 2.0 * h if params.pure_quads else h
@@ -149,8 +157,46 @@ def remesh(V, F, params):
             O, Q = stop.value
             break
 
-    yield ("Extracting quads", 0.67)
+    ctx = dict(mesh=mesh, N=N, Q=Q, O=O, hv=hv, feats=feats, vcomp=vcomp, surf=surf, seg=seg,
+               size_at=size_at, h=h, scale=scale, params=params)
+    expected = mesh.area / (h * h)
     if params.quantize:
+        result = yield from _finish(ctx, quantized=True, p0=0.67, p1=0.82)
+        if _suspicious(result.metrics, expected):
+            alt = yield from _finish(ctx, quantized=False, p0=0.82, p1=0.97)
+            if _score(alt.metrics, expected) < _score(result.metrics, expected):
+                result = alt
+    else:
+        result = yield from _finish(ctx, quantized=False, p0=0.67, p1=0.97)
+    return result
+
+
+def _suspicious(m, expected):
+    return (m["v6plus"] > 0 or m.get("flipped", 0) > 0 or m["edge_cv"] > 0.3
+            or abs(m["faces"] / max(expected, 1.0) - 1.0) > 0.15)
+
+
+def _score(m, expected):
+    """Lower is better: poles first, then defects that look broken."""
+    s = m["v3"] + m["v5"] + 4.0 * m["v6plus"]
+    s += 5.0 * m.get("flipped", 0)
+    s += 0.5 * m["boundary_edges"]
+    s += 60.0 * max(0.0, m["edge_cv"] - 0.25)
+    s += 80.0 * max(0.0, abs(m["faces"] / max(expected, 1.0) - 1.0) - 0.15)
+    return s
+
+
+def _finish(ctx, quantized, p0, p1):
+    """Extraction and all topology / geometry clean-up after the fields."""
+    mesh, N, Q, O, hv = ctx["mesh"], ctx["N"], ctx["Q"], ctx["O"], ctx["hv"]
+    feats, vcomp, surf, seg = ctx["feats"], ctx["vcomp"], ctx["surf"], ctx["seg"]
+    size_at, h, scale, params = ctx["size_at"], ctx["h"], ctx["scale"], ctx["params"]
+
+    def prog(f):
+        return p0 + (p1 - p0) * f
+
+    yield ("Extracting quads", prog(0.0))
+    if quantized:
         VP, VN, faces, c_feat, c_corner, c_bnd, c_comp, VQ, hc, _q = quantize_fine(
             mesh, N, Q, O, hv, feats.edge_mask, feats.is_feature, feats.is_corner, feats.is_boundary, vcomp)
     else:
@@ -168,31 +214,40 @@ def remesh(V, F, params):
     on_surf = ~pm.feat
     pm.V[on_surf], _ = surf.project(pm.V[on_surf], pm.comp[on_surf], pm.vertex_normals()[on_surf])
 
-    yield ("Fixing irregular faces", 0.72)
+    yield ("Fixing irregular faces", prog(0.25))
+    _dbg(pm, "extracted")
     quadify.fill_holes(pm)
     quadify.mark_feature_edges(pm, seg)
+    _dbg(pm, "filled")
     quadify.dissolve_valence2(pm)
-    quadify.pair_odd_faces(pm)
+    quadify.pair_odd_faces(pm, max_depth=6)
     quadify.split_even_ngons(pm)
+    _dbg(pm, "paired")
     if params.cleanup:
         cleanup.edge_rotation(pm)
         cleanup.diagonal_collapse(pm)
         quadify.dissolve_valence2(pm)
         quadify.pair_odd_faces(pm)
     pm.compact()
+    _dbg(pm, "cleaned")
     pm.V = relax(pm.V, pm.faces, scale, surf, seg, pm.feat, pm.corner, iterations=4, comp=pm.comp,
                  size_fn=size_at)
 
     if params.pure_quads:
-        yield ("Subdividing to pure quads", 0.8)
+        yield ("Subdividing to pure quads", prog(0.45))
+        quadify.split_odd_ngons(pm, min_size=7)   # avoid valence 7+ face centres
         pm = quadify.subdivide(pm)
     else:
         quadify.split_odd_ngons(pm)
 
-    yield ("Relaxing", 0.85)
+    _dbg(pm, "subdivided")
+    yield ("Relaxing", prog(0.55))
+
+    def final_size(pts):
+        return size_at(pts, h / scale)
+
     pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner,
-                 iterations=max(1, params.relax_iterations // 2), comp=pm.comp,
-                 size_fn=lambda pts: size_at(pts, h / scale))
+                 iterations=max(1, params.relax_iterations // 2), comp=pm.comp, size_fn=final_size)
     if params.cleanup:
         cleanup.edge_rotation(pm)
         cleanup.diagonal_collapse(pm)
@@ -201,13 +256,15 @@ def remesh(V, F, params):
         pm.compact()
     pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner,
                  iterations=max(1, params.relax_iterations - params.relax_iterations // 2), comp=pm.comp,
-                 size_fn=lambda pts: size_at(pts, h / scale))
+                 size_fn=final_size)
 
+    _dbg(pm, "final-clean")
     if params.untangle:
+        yield ("Untangling", prog(0.9))
         pm.V = untangle(pm.V, pm.faces, surf, seg, pm.feat, pm.corner, pm.comp)
 
-    yield ("Measuring", 0.98)
     m = metrics.compute(pm.V, pm.faces, surf, comp=pm.comp)
+    m["method"] = "quantized" if quantized else "classic"
     return Result(pm.V, pm.faces, m, set(pm.feature_edges))
 
 

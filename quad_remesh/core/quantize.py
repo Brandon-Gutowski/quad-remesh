@@ -491,7 +491,8 @@ def rebuild(lat, n):
         out.append(f)
     if __import__("os").environ.get("QR_DEBUG_COARSE"):
         print("[rebuild]", dict(stats))
-    return cl, nc, out
+    unit_edges = {ekey(c, d) for c in range(nc) for (d, _r) in nbr[c].values()}
+    return cl, nc, out, unit_edges
 
 
 def solve_positions(lat, V, cl, nc, anchor=0.05, iters=400):
@@ -591,6 +592,34 @@ def quantize(pm, VQ, VN, H):
     return out, (initial, remaining)
 
 
+def _fill_with_traced(P, VN, faces, unit_edges, bnd, max_len=10):
+    """Cover what the combinatorial cell walk missed (around singularities)
+    with faces traced geometrically on the lattice-neighbour graph."""
+    from .extract import trace_faces
+    used = set()
+    for f in faces:
+        for i in range(len(f)):
+            used.add((f[i], f[(i + 1) % len(f)]))
+    if not unit_edges:
+        return faces
+    E = np.array(sorted(unit_edges), dtype=np.int64)
+    traced = trace_faces(P, VN, E[:, 0], E[:, 1], max_len=max_len)
+    out = list(faces)
+    for f in traced:
+        hes = [(f[i], f[(i + 1) % len(f)]) for i in range(len(f))]
+        if any(he in used for he in hes):
+            continue
+        if bnd[f].sum() > len(f) // 2:
+            continue  # a real opening of the input surface
+        # skip "outer" loops traced the wrong way round
+        from .geom import newell_normal
+        if np.dot(newell_normal(P[f]), VN[f].sum(0)) <= 0:
+            continue
+        used.update(hes)
+        out.append(f)
+    return out
+
+
 def quantize_fine(mesh, N, Q, O, H, feature_edge_mask, is_feature, is_corner, is_boundary, vcomp,
                   max_cost=None):
     """Dislocation-free extraction straight from the fine mesh's position field.
@@ -604,8 +633,12 @@ def quantize_fine(mesh, N, Q, O, H, feature_edge_mask, is_feature, is_corner, is
     if max_cost is None:
         max_cost = float(__import__("os").environ.get("QR_REACH", "100")) * float(np.mean(H)) / max(float(mesh.edge_length.mean()), 1e-12)
     initial, remaining = cancel_charges(lat, max_cost=max_cost)
-    cl, nc, faces = rebuild(lat, n)
+    cl, nc, faces, unit_edges = rebuild(lat, n)
     P = solve_positions(lat, O, cl, nc)
+    VN0 = normalize(np.stack([np.bincount(cl, weights=N[:, k], minlength=nc) for k in range(3)], 1))
+    bnd0 = np.zeros(nc, bool)
+    bnd0[cl[is_boundary]] = True
+    faces = _fill_with_traced(P, VN0, faces, unit_edges, bnd0)
     if __import__("os").environ.get("QR_DEBUG_COARSE"):
         print(f"[quantize_fine] charges {initial}->{remaining} folds {folds0}->{lat.folded()} "
               f"clusters {nc} faces {len(faces)}")

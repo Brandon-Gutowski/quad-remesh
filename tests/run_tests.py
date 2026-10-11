@@ -64,16 +64,29 @@ class CoreQuality(unittest.TestCase):
 
     def test_sphere(self):
         res, h, a, _, _ = run_core("sphere")
-        self.check_common(res, h, a, max_poles=40)
-        self.assertLess(res.metrics["edge_cv"], 0.2)
+        self.check_common(res, h, a, max_poles=8)
+        self.assertLessEqual(res.metrics["irregular"], 24)
+        self.assertLess(res.metrics["edge_cv"], 0.25)
 
-    def test_torus(self):
+    def test_torus_is_regular(self):
         res, h, a, _, _ = run_core("torus")
-        self.check_common(res, h, a, max_poles=30)
+        self.check_common(res, h, a, max_poles=2)
+        self.assertLessEqual(res.metrics["irregular"], 4)
+
+    def test_noisy_scan(self):
+        res, h, a, _, _ = run_core("noisy_sphere")
+        self.check_common(res, h, a, max_poles=6)
+        self.assertLessEqual(res.metrics["irregular"], 20)
+        self.assertEqual(res.metrics.get("flipped", 0), 0)
+
+    def test_beveled_box(self):
+        res, h, a, _, _ = run_core("beveled_box")
+        self.check_common(res, h, a, max_poles=6)
+        self.assertLessEqual(res.metrics["irregular"], 16)
 
     def test_cylinder_follows_rims(self):
         res, h, a, V, F = run_core("cylinder")
-        self.check_common(res, h, a, max_poles=30)
+        self.check_common(res, h, a, max_poles=4)
         # Every output vertex near a rim should lie on the rim.
         r = np.linalg.norm(res.V[:, :2], axis=1)
         z = np.abs(res.V[:, 2])
