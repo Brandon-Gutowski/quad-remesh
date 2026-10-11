@@ -35,7 +35,7 @@ elif "source" in argv:
     res = _R(); res.V = V; res.faces = F.tolist()
     res.metrics = metrics.compute(V, res.faces)
 else:
-    res = pipeline.run(V, F, pipeline.Params(target_edge=h, detect_sharp=not nosharp, untangle="untangle" in argv))
+    res = pipeline.run(V, F, pipeline.Params(target_edge=h, detect_sharp=not nosharp, untangle=True))
 print(metrics.summary(res.metrics), "bnd", res.metrics["boundary_edges"])
 
 bpy.ops.wm.read_factory_settings(use_empty=True)

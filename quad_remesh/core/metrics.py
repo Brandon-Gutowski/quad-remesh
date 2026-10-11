@@ -69,15 +69,26 @@ def summary(m):
 def flipped_faces(V, faces, surf_proj, comp=None):
     """Indices of faces whose normal disagrees with the source surface, or
     that are folded onto themselves (a corner turning the wrong way)."""
-    bad = []
-    C = np.array([V[f].mean(0) for f in faces])
+    V = np.asarray(V)
+    if not len(faces):
+        return []
+    groups = {}
+    for fi, f in enumerate(faces):
+        groups.setdefault(len(f), []).append(fi)
+    C = np.zeros((len(faces), 3))
+    for m, idx in groups.items():
+        C[idx] = V[np.array([faces[i] for i in idx])].mean(1)
     fc = None if comp is None else np.array([comp[f[0]] for f in faces])
     _, SN = surf_proj.project(C, fc)
-    for fi, f in enumerate(faces):
-        P = V[f]
-        c = C[fi]
-        fn = np.cross(P - c, np.roll(P, -1, axis=0) - c).sum(0)
-        corner_n = np.cross(np.roll(P, -1, axis=0) - P, np.roll(P, 1, axis=0) - P)
-        if np.dot(fn, SN[fi]) <= 0 or (corner_n @ fn <= 0).any():
-            bad.append(fi)
-    return bad
+    bad = []
+    for m, idx in groups.items():
+        idx = np.array(idx)
+        Fm = np.array([faces[i] for i in idx])
+        P = V[Fm]
+        c = C[idx][:, None]
+        fn = np.cross(P - c, np.roll(P, -1, axis=1) - c).sum(1)
+        corner_n = np.cross(np.roll(P, -1, axis=1) - P, np.roll(P, 1, axis=1) - P)
+        neg = np.einsum("ij,ij->i", fn, SN[idx]) <= 0
+        fold = (np.einsum("kmj,kj->km", corner_n, fn) <= 0).any(1)
+        bad.extend(idx[neg | fold].tolist())
+    return sorted(bad)

@@ -119,3 +119,31 @@ def scale_field(mesh, N, Q, h, strength, sign=1.0, max_ratio=3.0):
     # keep sum(area / h_i^2) == sum(area / h^2)
     s = np.sqrt((mass * np.exp(-2 * u)).sum() / mass.sum())
     return h * np.exp(u) * s
+
+
+def thin_part_limit(mesh, N, hv, surf_proj, vcomp, ratio=1.2, floor=0.35, smooth_iters=6):
+    """Shrink the target size where the part is thinner than a quad, so thin
+    shells (ears, fins, cloth) keep valid front and back surfaces."""
+    from mathutils import Vector
+    V = mesh.V
+    n = len(V)
+    thick = np.full(n, np.inf)
+    eps = 1e-4 * float(np.mean(hv))
+    for i in range(n):
+        tree = surf_proj.trees.get(int(vcomp[i]))
+        if tree is None:
+            continue
+        nv = Vector(N[i])
+        hit = tree.ray_cast(Vector(V[i]) - nv * eps, -nv)
+        if hit[0] is not None and hit[1].dot(nv) < 0.0:   # the far side faces away
+            thick[i] = hit[3]
+    limit = np.maximum(ratio * thick, floor * hv)
+    out = np.minimum(hv, limit)
+    if not (out < hv).any():
+        return hv
+    a, b = mesh.edges[:, 0], mesh.edges[:, 1]
+    deg = np.maximum(np.bincount(np.concatenate([a, b]), minlength=n), 1)
+    for _ in range(smooth_iters):
+        avg = (np.bincount(a, weights=out[b], minlength=n) + np.bincount(b, weights=out[a], minlength=n)) / deg
+        out = np.minimum(out, 0.5 * (out + avg))   # only ever spreads the refinement
+    return np.maximum(out, floor * hv)

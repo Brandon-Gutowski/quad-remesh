@@ -22,6 +22,7 @@ def _params(context, obj):
         relax_iterations=st.relax_iterations,
         cleanup=st.cleanup,
         quantize=st.cleanup,
+        adapt_thin=st.adapt_thin,
     )
     return V, F, params
 

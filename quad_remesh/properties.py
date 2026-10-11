@@ -76,6 +76,12 @@ class QR_Settings(bpy.types.PropertyGroup):
                     "unnecessary irregular vertices (poles/stars)",
         default=True,
     )
+    adapt_thin: BoolProperty(
+        name="Refine Thin Parts",
+        description="Use smaller quads where the mesh is thinner than a quad (ears, fins, "
+                    "cloth) so both sides stay clean. Adds a few poles at the size transitions",
+        default=False,
+    )
     hide_original: BoolProperty(
         name="Hide Original",
         description="Hide the source object after remeshing",

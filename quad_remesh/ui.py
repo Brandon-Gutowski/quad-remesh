@@ -64,6 +64,7 @@ class QR_PT_main(bpy.types.Panel):
         box.label(text="Quality", icon='MESH_GRID')
         box.prop(st, "pure_quads")
         box.prop(st, "cleanup")
+        box.prop(st, "adapt_thin")
         box.prop(st, "relax_iterations")
         box.prop(st, "hide_original")
 

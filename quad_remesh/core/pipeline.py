@@ -15,7 +15,7 @@ from .orientation import solve_orientation
 from .polymesh import PolyMesh
 from .position import solve_position
 from .relax import relax, untangle
-from .scale import scale_field
+from .scale import scale_field, thin_part_limit
 from .quantize import quantize_fine
 from .spatial import PointIndex, SegmentProjector, SurfaceProjector
 
@@ -33,6 +33,7 @@ class Params:
     cleanup: bool = True
     untangle: bool = True
     size_flexibility: float = 0.0
+    adapt_thin: bool = False
     quantize: bool = True
 
 
@@ -143,6 +144,8 @@ def remesh(V, F, params):
 
     yield ("Fitting quad sizes", 0.35)
     hv = scale_field(mesh, N, Q, scale, params.size_flexibility)
+    if params.adapt_thin:
+        hv = thin_part_limit(mesh, N, hv, surf, vcomp)
     index = PointIndex(mesh.V)
 
     def size_at(pts, factor=1.0):

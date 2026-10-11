@@ -35,11 +35,14 @@ _CORNERS = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.float64)
 def compat_pair(Pi, Ni, Qi, Ti, Oi, Pj, Nj, Qj, Tj, Oj, h):
     """Closest pair of lattice points (one from each vertex's lattice) near the
     edge midpoint. Returns (point of i's lattice, point of j's lattice)."""
-    mid = middle_point(Pi, Ni, Pj, Nj)
+    return compat_pair_mid(middle_point(Pi, Ni, Pj, Nj), Qi, Ti, Oi, Qj, Tj, Oj, h)
+
+
+def compat_pair_mid(mid, Qi, Ti, Oi, Qj, Tj, Oj, h):
     base = floor4(Oi, Qi, Ti, mid, h)
     hh = np.asarray(h, dtype=np.float64)
     hc = hh[:, None] if hh.ndim else hh
-    best_cost = np.full(len(Pi), np.inf)
+    best_cost = np.full(len(mid), np.inf)
     bi = base.copy()
     bj = base.copy()
     for cx, cy in _CORNERS:
@@ -54,16 +57,28 @@ def compat_pair(Pi, Ni, Qi, Ti, Oi, Pj, Nj, Qj, Tj, Oj, h):
     return bi, bj
 
 
-def _gs_sweep(P, N, Q, T, O, ej, indptr, slots, hv):
+class _Slots:
+    """Per-level neighbour slots with everything that stays constant during
+    the sweeps gathered once (positions, frames, edge midpoints, spacing)."""
+
+    def __init__(self, P, N, Q, T, ej, indptr, hv):
+        deg = np.diff(indptr)
+        self.items = []
+        for k in range(int(deg.max()) if len(deg) else 0):
+            i = np.nonzero(deg > k)[0]
+            j = ej[indptr[i] + k]
+            mid = middle_point(P[i], N[i], P[j], N[j])
+            self.items.append((i, j, mid, Q[i], T[i], Q[j], T[j], N[i], P[i], 0.5 * (hv[i] + hv[j])))
+
+
+def _gs_sweep(O, slots):
     """One smoothing sweep: every vertex folds in its neighbours one at a time
     (running average, as in Instant Meshes), vectorized across vertices."""
     S = O.copy()
-    for k, i in enumerate(slots):
-        j = ej[indptr[i] + k]
-        he = 0.5 * (hv[i] + hv[j])
-        a, b = compat_pair(P[i], N[i], Q[i], T[i], S[i], P[j], N[j], Q[j], T[j], O[j], he)
+    for k, (i, j, mid, Qi, Ti, Qj, Tj, Ni, Pi, he) in enumerate(slots.items):
+        a, b = compat_pair_mid(mid, Qi, Ti, S[i], Qj, Tj, O[j], he)
         s = (a * k + b) / (k + 1.0)
-        S[i] = s - N[i] * dot(N[i], s - P[i])[:, None]
+        S[i] = s - Ni * np.einsum("ij,ij->i", Ni, s - Pi)[:, None]
     return S
 
 
@@ -92,7 +107,10 @@ def _apply_constraints(O, P, N, line_mask, line_pt, line_dir, corner_mask, corne
     return O
 
 
-def solve_position(levels, Q, h, line_mask, line_dir, corner_mask, iters_coarse=30, iters_fine=40):
+def solve_position(levels, Q, h, line_mask, line_dir, corner_mask, iters_coarse=None, iters_fine=None):
+    import os as _os
+    iters_coarse = iters_coarse or int(_os.environ.get("QR_PIC", "30"))
+    iters_fine = iters_fine or int(_os.environ.get("QR_PIF", "40"))
     """Generator; yields progress and returns (lattice origins, field) at the fine level."""
     nlev = len(levels)
     Qs = _restrict_q(levels, Q)
@@ -121,11 +139,10 @@ def solve_position(levels, Q, h, line_mask, line_dir, corner_mask, iters_coarse=
             O = round4(O, Ql, Tl, P, hv)
         O = _apply_constraints(O, P, N, line_m, line_pt, line_d, cm[li], cv[li])
         indptr = np.concatenate([[0], np.cumsum(np.bincount(L.ei, minlength=L.n))])
-        deg = np.diff(indptr)
-        slots = [np.nonzero(deg > k)[0] for k in range(int(deg.max()) if len(deg) else 0)]
+        slots = _Slots(P, N, Ql, Tl, L.ej, indptr, hv)
         iters = iters_fine if li == 0 else iters_coarse
         for it in range(iters):
-            O = _gs_sweep(P, N, Ql, Tl, O, L.ej, indptr, slots, hv)
+            O = _gs_sweep(O, slots)
             O = round4(O, Ql, Tl, P, hv)
             O = _apply_constraints(O, P, N, line_m, line_pt, line_d, cm[li], cv[li])
             if it % 5 == 0:

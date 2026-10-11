@@ -103,3 +103,7 @@ def smooth_monkey(levels=2):
     bpy.data.objects.remove(ob)
     bm.verts.index_update()
     return _from_bm(bm)
+
+
+def big_monkey():
+    return smooth_monkey(levels=3)
