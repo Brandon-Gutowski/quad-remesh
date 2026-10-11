@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Draw edge-flow guide strokes directly on the mesh surface."""
 
 import bpy

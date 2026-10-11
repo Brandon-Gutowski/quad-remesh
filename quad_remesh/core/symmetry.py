@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Mirror symmetry: remesh one half of the input, then mirror and weld it.
 
 The input is cut at the mirror plane and only the positive side is kept. The

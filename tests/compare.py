@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Compare parameter settings across meshes.
 blender -b --python tests/compare.py -- "mesh:density,..." key=v1|v2 ...
 """

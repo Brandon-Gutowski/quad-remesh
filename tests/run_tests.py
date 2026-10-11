@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Headless test suite.
 
     blender -b --factory-startup --python tests/run_tests.py

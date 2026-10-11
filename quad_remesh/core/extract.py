@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Extract a polygon mesh from the position field (Instant Meshes style)."""
 
 import numpy as np

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Spatial queries built on mathutils (available in Blender's Python, no bpy needed)."""
 
 import numpy as np

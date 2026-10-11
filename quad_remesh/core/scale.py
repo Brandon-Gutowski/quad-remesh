@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Conformal scale field that makes the cross field (nearly) integrable.
 
 A uniform lattice cannot follow a curved cross field without inserting

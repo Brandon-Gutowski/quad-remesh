@@ -84,3 +84,10 @@ blender -b --factory-startup --python tests/render_result.py -- torus 40 /tmp/to
 
 `quad_remesh/core/` contains no `bpy` imports (only NumPy and `mathutils`), so the algorithm can
 be tested without the add-on.
+
+## License
+
+Quad Remesh is free software, licensed under the
+[GNU General Public License v3.0 or later](LICENSE) (`GPL-3.0-or-later`), the same
+license family as Blender. You may use, study, share and modify it. If you distribute it
+or a modified version, you must do so under the same license and make the source available.

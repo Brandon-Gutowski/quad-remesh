@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Turn the extracted quad-dominant mesh into (pure) quads."""
 
 from collections import deque

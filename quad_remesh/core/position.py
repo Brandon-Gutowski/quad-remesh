@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """4-PoSy position field: per-vertex lattice origin aligned with the cross field."""
 
 import numpy as np

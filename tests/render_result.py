@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brandon Gutowski
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Render remesh results to PNG for visual inspection.
 
 blender -b --factory-startup --python tests/render_result.py -- <mesh> <density> <out.png> [nosharp] [view=x,y,z]
