@@ -1,0 +1,83 @@
+"""Spatial queries built on mathutils (available in Blender's Python, no bpy needed)."""
+
+import numpy as np
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+from mathutils.kdtree import KDTree
+
+
+class SurfaceProjector:
+    """Closest point on the source triangle surface."""
+
+    def __init__(self, V, F):
+        self.tree = BVHTree.FromPolygons([tuple(v) for v in V], [tuple(f) for f in F], all_triangles=True)
+
+    def project(self, P):
+        out = np.array(P, dtype=np.float64, copy=True)
+        nrm = np.zeros_like(out)
+        find = self.tree.find_nearest
+        for i, p in enumerate(P):
+            hit = find(Vector(p))
+            if hit[0] is not None:
+                out[i] = hit[0]
+                nrm[i] = hit[1]
+        return out, nrm
+
+
+class SegmentProjector:
+    """Closest point on a set of 3D line segments (the feature network)."""
+
+    def __init__(self, segments, spacing):
+        self.A = np.asarray(segments[:, 0], dtype=np.float64)
+        self.B = np.asarray(segments[:, 1], dtype=np.float64)
+        L = np.linalg.norm(self.B - self.A, axis=1)
+        nsamp = np.maximum(1, np.ceil(L / max(spacing, 1e-12)).astype(int)) + 1
+        seg_id = np.repeat(np.arange(len(L)), nsamp)
+        t = np.concatenate([np.linspace(0.0, 1.0, k) for k in nsamp]) if len(L) else np.zeros(0)
+        pts = self.A[seg_id] + (self.B - self.A)[seg_id] * t[:, None]
+        self.seg_id = seg_id
+        self.kd = KDTree(len(pts))
+        for i, p in enumerate(pts):
+            self.kd.insert(p, i)
+        self.kd.balance()
+        self.empty = len(pts) == 0
+
+    def _closest_on(self, p, sids):
+        A, B = self.A[sids], self.B[sids]
+        AB = B - A
+        t = np.clip(np.einsum("ij,ij->i", p - A, AB) / np.maximum(np.einsum("ij,ij->i", AB, AB), 1e-30), 0.0, 1.0)
+        C = A + AB * t[:, None]
+        d = np.linalg.norm(C - p, axis=1)
+        k = int(np.argmin(d))
+        return C[k], d[k], AB[k]
+
+    def project(self, P, k=6):
+        """Returns (points, distances, segment directions)."""
+        P = np.asarray(P, dtype=np.float64)
+        out = P.copy()
+        dist = np.full(len(P), np.inf)
+        dirs = np.zeros_like(P)
+        if self.empty:
+            return out, dist, dirs
+        for i, p in enumerate(P):
+            hits = self.kd.find_n(p, k)
+            sids = np.unique(self.seg_id[[h[1] for h in hits]])
+            c, d, ab = self._closest_on(p, sids)
+            out[i], dist[i], dirs[i] = c, d, ab
+        return out, dist, dirs
+
+
+class PointIndex:
+    """KD-tree over points for nearest / radius queries."""
+
+    def __init__(self, P):
+        self.kd = KDTree(len(P))
+        for i, p in enumerate(P):
+            self.kd.insert(p, i)
+        self.kd.balance()
+
+    def nearest(self, p):
+        return self.kd.find(p)[1]
+
+    def within(self, p, r):
+        return [h[1] for h in self.kd.find_range(p, r)]
