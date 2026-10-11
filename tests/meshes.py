@@ -82,3 +82,24 @@ def beveled_box():
     bmesh.ops.bevel(bm, geom=bm.edges[:] + bm.verts[:], offset=0.2, segments=3, affect='EDGES', profile=0.5)
     bm.verts.index_update()
     return _from_bm(bm)
+
+
+def smooth_monkey(levels=2):
+    me = bpy.data.meshes.new("sm")
+    bm = bmesh.new()
+    bmesh.ops.create_monkey(bm)
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new("sm", me)
+    bpy.context.scene.collection.objects.link(ob)
+    mod = ob.modifiers.new("s", 'SUBSURF')
+    mod.levels = levels
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = ob.evaluated_get(dg)
+    m2 = ev.to_mesh()
+    bm = bmesh.new()
+    bm.from_mesh(m2)
+    ev.to_mesh_clear()
+    bpy.data.objects.remove(ob)
+    bm.verts.index_update()
+    return _from_bm(bm)

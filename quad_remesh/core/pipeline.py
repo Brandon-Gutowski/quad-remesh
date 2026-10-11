@@ -10,7 +10,7 @@ from . import cleanup, metrics, quadify
 from .extract import _components, extract_mesh
 from .features import Features
 from .hierarchy import build_hierarchy
-from .mesh_data import TriMesh, clean, split_long_edges
+from .mesh_data import TriMesh, clean, smooth_normals, split_long_edges
 from .orientation import solve_orientation
 from .polymesh import PolyMesh
 from .position import solve_position
@@ -107,7 +107,8 @@ def remesh(V, F, params):
     seg = SegmentProjector(feats.segments, scale / 8.0, vcomp[feats.feature_edges[:, 0]]) if feats.any else None
 
     yield ("Building hierarchy", 0.08)
-    levels = build_hierarchy(mesh.V, mesh.vertex_normal, mesh.vertex_area, mesh.ei, mesh.ej)
+    N = smooth_normals(mesh, feats.edge_mask, 0.25 * scale)
+    levels = build_hierarchy(mesh.V, N, mesh.vertex_area, mesh.ei, mesh.ej)
 
     line_mask = feats.is_feature & ~feats.is_corner
     hard_mask = line_mask.copy()
@@ -139,7 +140,7 @@ def remesh(V, F, params):
 
     yield ("Extracting quads", 0.66)
     VP, VN, faces, c_feat, c_corner, c_bnd, c_comp = extract_mesh(
-        mesh.V, mesh.vertex_normal, Q, O, mesh.edges, scale,
+        mesh.V, N, Q, O, mesh.edges, scale,
         feats.is_feature, feats.is_corner, feats.is_boundary, vcomp)
     if not faces:
         raise ValueError("Extraction produced no faces; try a lower density")

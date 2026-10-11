@@ -21,12 +21,15 @@ class Features:
             cosang = dot(mesh.face_normal[f0], mesh.face_normal[f1])
             sharp = np.zeros(len(E), bool)
             sharp[two] = cosang < math.cos(sharp_angle)
+            if scale is not None and sharp.any():
+                sharp = _scale_dihedral_filter(mesh, sharp, max(0.35 * scale, 3.0 * float(mesh.edge_length.mean())),
+                                               sharp_angle)
             mask |= sharp
         if marked_pairs is not None and len(marked_pairs):
             idx = mesh.edge_index(marked_pairs)
             mask[idx[idx >= 0]] = True
         if scale is not None:
-            mask = _drop_short_chains(E, mesh.edge_length, mask, self.boundary_edge, 0.5 * scale)
+            mask = _drop_short_chains(E, mesh.edge_length, mask, self.boundary_edge, 1.0 * scale)
         self.edge_mask = mask
 
         fe = E[mask]
@@ -132,3 +135,55 @@ def _thin_corners(V, corner, vc, radius):
         kept.append(c)
         out[c] = True
     return out
+
+
+def _scale_dihedral_filter(mesh, cand, radius, angle):
+    """Keep candidate sharp edges only if the surface is still creased at
+    `radius`: fit a plane to the points on each side of the edge and compare."""
+    from .spatial import PointIndex
+    V = mesh.V
+    index = PointIndex(V)
+    out = cand.copy()
+    cos_thr = math.cos(0.75 * angle)
+    for e in np.nonzero(cand)[0]:
+        u, v = mesh.edges[e]
+        f0, f1 = mesh.edge_faces[e]
+        mid = 0.5 * (V[u] + V[v])
+        d = V[v] - V[u]
+        d /= max(np.linalg.norm(d), 1e-30)
+        n0, n1 = mesh.face_normal[f0], mesh.face_normal[f1]
+        navg = n0 + n1
+        side = np.cross(d, navg)
+        # orient `side` toward face f0
+        c0 = V[mesh.F[f0]].mean(0)
+        if np.dot(c0 - mid, side) < 0:
+            side = -side
+        pts = V[index.within(mid, radius)]
+        rel = pts - mid
+        rel = rel - np.outer(rel @ d, d) * 0.0
+        s_ = rel @ side
+        A = rel[s_ > 1e-12 * radius]
+        B = rel[s_ < -1e-12 * radius]
+        if len(A) < 3 or len(B) < 3:
+            continue
+        na = _plane_normal(A, d, n0)
+        nb = _plane_normal(B, d, n1)
+        if np.dot(na, nb) > cos_thr:
+            out[e] = False
+    return out
+
+
+def _plane_normal(rel, d, ref):
+    """Normal of the plane through the edge line (origin, direction d) that best
+    fits the points: the direction perpendicular to d with least variance."""
+    q = rel - np.outer(rel @ d, d)
+    C = q.T @ q
+    w, vecs = np.linalg.eigh(C)
+    # among eigenvectors, the smallest-variance one orthogonal-ish to d
+    for k in range(3):
+        cand = vecs[:, k]
+        if abs(np.dot(cand, d)) < 0.5:
+            break
+    if np.dot(cand, ref) < 0:
+        cand = -cand
+    return cand

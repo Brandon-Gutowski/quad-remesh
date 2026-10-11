@@ -181,3 +181,23 @@ class TriMesh:
         pos = np.searchsorted(self.edge_keys, k)
         pos = np.minimum(pos, len(self.edge_keys) - 1)
         return np.where(self.edge_keys[pos] == k, pos, -1)
+
+
+def smooth_normals(mesh, blocked_edges, radius):
+    """Smooth vertex normals over roughly `radius`, never across blocked
+    (feature) edges, so noisy surfaces still give a calm cross field."""
+    N = mesh.vertex_normal.copy()
+    mean_edge = float(mesh.edge_length.mean()) if len(mesh.edge_length) else 1.0
+    iters = int(min(40, (radius / max(mean_edge, 1e-12)) ** 2))
+    if iters < 1:
+        return N
+    ok = ~blocked_edges
+    a = mesh.edges[ok, 0]
+    b = mesh.edges[ok, 1]
+    n = len(N)
+    for _ in range(iters):
+        acc = N.copy()
+        for k in range(3):
+            acc[:, k] += np.bincount(a, weights=N[b, k], minlength=n) + np.bincount(b, weights=N[a, k], minlength=n)
+        N = normalize(acc)
+    return N
