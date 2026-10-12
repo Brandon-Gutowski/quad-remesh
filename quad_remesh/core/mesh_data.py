@@ -15,7 +15,12 @@ def edge_keys(a, b, n):
 
 
 def clean(V, F, flag_pairs=None, tol=None):
-    """Merge coincident vertices and drop degenerate / duplicate triangles.
+    """Merge (near-)identical vertices and drop collapsed / duplicate triangles.
+
+    Non-destructive on purpose: only vertices that are practically identical
+    are welded, and zero-area triangles are kept (deleting them would tear
+    holes into CAD tessellations); a triangle is only dropped once two of its
+    corners are the same vertex.
 
     flag_pairs is an optional (k,2) array of vertex pairs (e.g. marked sharp
     edges) that is remapped alongside the vertices.
@@ -24,7 +29,7 @@ def clean(V, F, flag_pairs=None, tol=None):
     F = np.asarray(F, dtype=np.int64).reshape(-1, 3)
     if tol is None:
         diag = np.linalg.norm(V.max(0) - V.min(0)) if len(V) else 1.0
-        tol = max(diag * 1e-6, 1e-12)
+        tol = max(diag * 1e-9, 1e-15)
     q = np.round(V / tol).astype(np.int64)
     _, first, inv = np.unique(q, axis=0, return_index=True, return_inverse=True)
     inv = inv.reshape(-1)
@@ -35,10 +40,6 @@ def clean(V, F, flag_pairs=None, tol=None):
     if len(F2):
         _, uidx = np.unique(np.sort(F2, axis=1), axis=0, return_index=True)
         F2 = F2[np.sort(uidx)]
-    # Drop zero-area triangles.
-    if len(F2):
-        area = norm(np.cross(V2[F2[:, 1]] - V2[F2[:, 0]], V2[F2[:, 2]] - V2[F2[:, 0]]))
-        F2 = F2[area > tol * tol]
     # Drop unreferenced vertices.
     used = np.zeros(len(V2), bool)
     used[F2.reshape(-1)] = True
@@ -53,12 +54,16 @@ def clean(V, F, flag_pairs=None, tol=None):
     return V3, F3, pairs
 
 
-def split_long_edges(V, F, max_len, flag_pairs=None, max_iter=12, max_faces=4_000_000):
+def split_long_edges(V, F, max_len, flag_pairs=None, max_iter=12, max_faces=4_000_000, vlimit=None):
     """Conforming refinement: bisect every edge longer than max_len.
 
-    Child edges of flagged edges stay flagged.
+    Child edges of flagged edges stay flagged. With `vlimit` (per-vertex
+    length limits) an edge is split when longer than the smaller limit of its
+    two ends; the limits are carried to new vertices and returned as a 4th
+    value.
     """
     V = np.asarray(V, dtype=np.float64)
+    lim = None if vlimit is None else np.asarray(vlimit, dtype=np.float64).copy()
     F = np.asarray(F, dtype=np.int64)
     pairs = None if flag_pairs is None else np.asarray(flag_pairs, dtype=np.int64).reshape(-1, 2)
     for _ in range(max_iter):
@@ -67,12 +72,14 @@ def split_long_edges(V, F, max_len, flag_pairs=None, max_iter=12, max_faces=4_00
         b = F[:, [1, 2, 0]]
         keys = edge_keys(a, b, n)
         L = np.linalg.norm(V[a] - V[b], axis=2)
-        long = L > max_len
+        long = L > (max_len if lim is None else np.minimum(lim[a], lim[b]))
         if not long.any() or len(F) > max_faces:
             break
         lk = np.unique(keys[long])
         ea, eb = lk // n, lk % n
         V = np.vstack([V, 0.5 * (V[ea] + V[eb])])
+        if lim is not None:
+            lim = np.concatenate([lim, 0.5 * (lim[ea] + lim[eb])])
         M = np.full(F.shape, -1, dtype=np.int64)
         M[long] = n + np.searchsorted(lk, keys[long])
         cnt = long.sum(1)
@@ -124,6 +131,8 @@ def split_long_edges(V, F, max_len, flag_pairs=None, max_iter=12, max_faces=4_00
                 pairs = np.vstack([pairs[~hit],
                                    np.stack([ph[:, 0], mid], 1),
                                    np.stack([mid, ph[:, 1]], 1)])
+    if lim is not None:
+        return V, F, pairs, lim
     return V, F, pairs
 
 

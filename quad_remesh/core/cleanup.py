@@ -136,3 +136,67 @@ def edge_rotation(pm, max_rounds=8, max_len_ratio=1.6):
         if not changes:
             break
     return total
+
+
+def break_stars(pm, max_rounds=6, max_len_ratio=2.0):
+    """Last resort for vertices with 6+ edges: rotate one of their edges (not a
+    feature edge) so their valence drops, without creating another star."""
+    total = 0
+    for _ in range(max_rounds):
+        ef = pm.edge_faces()
+        val, open_v = pm.valence(ef)
+        stars = np.nonzero((val >= 6) & ~open_v)[0]
+        if not len(stars):
+            break
+        lens = [np.linalg.norm(pm.V[a] - pm.V[b]) for a, b in ef.keys()]
+        mean_len = float(np.mean(lens)) if lens else 1.0
+        touched = set()
+        changed = 0
+        for s in stars:
+            best = None
+            for (u, v), fl in ef.items():
+                if s not in (u, v) or len(fl) != 2 or ekey(u, v) in pm.feature_edges:
+                    continue
+                if fl[0] in touched or fl[1] in touched:
+                    continue
+                F1, F2 = pm.faces[fl[0]], pm.faces[fl[1]]
+                if len(F1) != 4 or len(F2) != 4:
+                    continue
+                k = F1.index(u)
+                if F1[(k + 1) % 4] != v:
+                    F1, F2 = F2, F1
+                    k = F1.index(u)
+                    if F1[(k + 1) % 4] != v:
+                        continue
+                x1, x2 = F1[(k + 2) % 4], F1[(k + 3) % 4]
+                j = F2.index(v)
+                if F2[(j + 1) % 4] != u:
+                    continue
+                y1, y2 = F2[(j + 2) % 4], F2[(j + 3) % 4]
+                if len({u, v, x1, x2, y1, y2}) != 6:
+                    continue
+                for (p, q, fa, fb) in ((x1, y1, [x1, x2, u, y1], [y1, y2, v, x1]),
+                                       (x2, y2, [x2, u, y1, y2], [y2, v, x1, x2])):
+                    if ekey(p, q) in ef or val[p] + 1 >= 6 or val[q] + 1 >= 6:
+                        continue
+                    if min(val[u], val[v]) - 1 < 3 and not (open_v[u] or open_v[v]):
+                        continue
+                    L = np.linalg.norm(pm.V[p] - pm.V[q])
+                    if L > max_len_ratio * mean_len:
+                        continue
+                    score = (val[p] + val[q], L)
+                    if best is None or score < best[0]:
+                        best = (score, fl, fa, fb, u, v, p, q)
+            if best is None:
+                continue
+            _s, fl, fa, fb, u, v, p, q = best
+            pm.faces[fl[0]], pm.faces[fl[1]] = fa, fb
+            touched.update(fl)
+            for w, d in ((u, -1), (v, -1), (p, 1), (q, 1)):
+                val[w] += d
+            ef = pm.edge_faces()
+            changed += 1
+        total += changed
+        if not changed:
+            break
+    return total

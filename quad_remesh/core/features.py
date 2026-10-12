@@ -12,27 +12,45 @@ from .geom import dot, normalize
 
 class Features:
     def __init__(self, mesh, sharp_angle=None, marked_pairs=None, corner_angle=math.radians(35.0),
-                 scale=None):
+                 scale=None, mask=None):
         n = len(mesh.V)
         E = mesh.edges
         cnt = mesh.edge_face_count
+        if mask is not None:
+            self.boundary_edge = cnt == 1
+            self._build(mesh, np.asarray(mask, bool) | (cnt != 2), corner_angle, scale)
+            return
         mask = cnt != 2  # boundaries and non-manifold edges are always features
         self.boundary_edge = cnt == 1
+        protected = mask.copy()
+        if marked_pairs is not None and len(marked_pairs):
+            idx = mesh.edge_index(marked_pairs)
+            mask[idx[idx >= 0]] = True
+            protected[idx[idx >= 0]] = True
+        sharp = np.zeros(len(E), bool)
         if sharp_angle is not None:
             two = cnt == 2
             f0, f1 = mesh.edge_faces[two, 0], mesh.edge_faces[two, 1]
             cosang = dot(mesh.face_normal[f0], mesh.face_normal[f1])
-            sharp = np.zeros(len(E), bool)
-            sharp[two] = cosang < math.cos(sharp_angle)
-            if scale is not None and sharp.any():
+            # Zero-area triangles have no normal: never call their edges sharp.
+            ok = (mesh.face_area[f0] > 0) & (mesh.face_area[f1] > 0)
+            sharp[two] = (cosang < math.cos(sharp_angle)) & ok
+        if scale is not None and sharp.any():
+            # Cheap chain-length filter first, then the scale-aware test on
+            # what survives (it is far more expensive per edge).
+            keep = _drop_short_chains(E, mesh.edge_length, mask | sharp, protected, 1.0 * scale)
+            sharp &= keep
+            if sharp.any():
                 sharp = _scale_dihedral_filter(mesh, sharp, max(0.35 * scale, 3.0 * float(mesh.edge_length.mean())),
                                                sharp_angle)
-            mask |= sharp
-        if marked_pairs is not None and len(marked_pairs):
-            idx = mesh.edge_index(marked_pairs)
-            mask[idx[idx >= 0]] = True
+        mask |= sharp
         if scale is not None:
-            mask = _drop_short_chains(E, mesh.edge_length, mask, self.boundary_edge, 1.0 * scale)
+            mask = _drop_short_chains(E, mesh.edge_length, mask, protected, 1.0 * scale)
+        self._build(mesh, mask, corner_angle, scale)
+
+    def _build(self, mesh, mask, corner_angle, scale):
+        n = len(mesh.V)
+        E = mesh.edges
         self.edge_mask = mask
 
         fe = E[mask]
@@ -190,3 +208,29 @@ def _plane_normal(rel, d, ref):
     if np.dot(cand, ref) < 0:
         cand = -cand
     return cand
+
+
+def transfer_features(mesh, seg_proj, comps=None, tol=0.25, min_cos=0.8):
+    """Feature mask for `mesh` from feature curves found on another mesh of the
+    same surface (e.g. the full-resolution original). An edge is a feature when
+    it runs along a curve: its midpoint lies within tol*length of the curve and
+    its direction agrees with the curve's."""
+    E = mesh.edges
+    mask = mesh.edge_face_count != 2
+    if seg_proj is None or seg_proj.empty or not len(E):
+        return mask
+    V = mesh.V
+    L = mesh.edge_length
+    vlen = np.zeros(len(V))
+    np.maximum.at(vlen, E[:, 0], L)
+    np.maximum.at(vlen, E[:, 1], L)
+    near_v = np.array([seg_proj.kd.find(p)[2] for p in V]) < vlen
+    cand = np.nonzero(near_v[E[:, 0]] & near_v[E[:, 1]] & ~mask)[0]
+    if not len(cand):
+        return mask
+    mid = 0.5 * (V[E[cand, 0]] + V[E[cand, 1]])
+    _, dist, dirs = seg_proj.project(mid, comps=None if comps is None else comps[E[cand, 0]])
+    d = V[E[cand, 1]] - V[E[cand, 0]]
+    cosang = np.abs(dot(d, dirs)) / np.maximum(L[cand] * np.linalg.norm(dirs, axis=1), 1e-30)
+    mask[cand[(dist < tol * L[cand]) & (cosang > min_cos)]] = True
+    return mask

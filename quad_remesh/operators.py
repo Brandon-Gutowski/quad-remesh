@@ -6,7 +6,7 @@ import time
 import blf
 import bpy
 
-from . import bridge
+from . import bridge, prep
 from .core import metrics, pipeline
 
 
@@ -27,6 +27,8 @@ def _params(context, obj):
         cleanup=st.cleanup,
         quantize=st.cleanup,
         adapt_thin=st.adapt_thin,
+        detail=st.detail,
+        prepare_fn=prep.prepare,
         symmetry_plane=bridge.symmetry_plane(obj, st.symmetry_axis) if st.use_symmetry else None,
     )
     return V, F, params

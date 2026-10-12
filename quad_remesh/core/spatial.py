@@ -19,16 +19,46 @@ class SurfaceProjector:
     """
 
     def __init__(self, V, F, face_comp=None):
-        V = np.asarray(V)
-        F = np.asarray(F)
+        V = np.asarray(V, dtype=np.float64)
+        F = np.asarray(F, dtype=np.int64)
         if face_comp is None:
             face_comp = np.zeros(len(F), dtype=np.int64)
+        self.face_comp = np.asarray(face_comp, dtype=np.int64)
         self.trees = {}
-        for c in np.unique(face_comp):
-            Fc = F[face_comp == c]
-            self.trees[int(c)] = BVHTree.FromPolygons([tuple(v) for v in V], [tuple(f) for f in Fc],
+        comps = np.unique(self.face_comp)
+        for c in comps:
+            Fc = F[self.face_comp == c]
+            used, local = np.unique(Fc, return_inverse=True)
+            self.trees[int(c)] = BVHTree.FromPolygons(V[used].tolist(), local.reshape(-1, 3).tolist(),
                                                        all_triangles=True)
-        self.default = int(np.bincount(face_comp).argmax()) if len(face_comp) else 0
+        if len(comps) == 1:
+            self.global_tree = self.trees[int(comps[0])]
+            self._global_faces = np.nonzero(self.face_comp == comps[0])[0]
+        else:
+            self.global_tree = BVHTree.FromPolygons(V.tolist(), F.tolist(), all_triangles=True)
+            self._global_faces = np.arange(len(F))
+        self.default = int(np.bincount(self.face_comp).argmax()) if len(self.face_comp) else 0
+
+    def component_of(self, P):
+        """Component label of the source surface nearest to each point."""
+        out = np.full(len(P), self.default, dtype=np.int64)
+        for i, p in enumerate(P):
+            hit = self.global_tree.find_nearest(Vector(p))
+            if hit[2] is not None:
+                out[i] = self.face_comp[self._global_faces[hit[2]]]
+        return out
+
+    def ray_thickness(self, P, N, comps=None, eps=1e-7):
+        """Distance from each point to the far side of its part along -normal
+        (inf where nothing is hit)."""
+        out = np.full(len(P), np.inf)
+        for i in range(len(P)):
+            tree = self.trees.get(int(comps[i]) if comps is not None else self.default, self.global_tree)
+            nv = Vector(N[i])
+            hit = tree.ray_cast(Vector(P[i]) - nv * eps, -nv)
+            if hit[0] is not None and hit[1].dot(nv) < 0.0:   # the far side faces away
+                out[i] = hit[3]
+        return out
 
     def project(self, P, comps=None, normals=None):
         out = np.array(P, dtype=np.float64, copy=True)

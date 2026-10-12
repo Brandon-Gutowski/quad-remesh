@@ -96,9 +96,17 @@ class QR_Settings(bpy.types.PropertyGroup):
     )
     adapt_thin: BoolProperty(
         name="Refine Thin Parts",
-        description="Use smaller quads where the mesh is thinner than a quad (ears, fins, "
-                    "cloth) so both sides stay clean. Adds a few poles at the size transitions",
+        description="Separate pieces that are thinner than a quad (caps, shells, labels, fins) are "
+                    "remeshed at their own smaller, even quad size so both sides and the rim stay "
+                    "clean. Adds faces on those pieces only",
         default=True,
+    )
+    detail: FloatProperty(
+        name="Detail",
+        description="Keep detail that is smaller than a quad (small fillets, ridges, embossing) by "
+                    "using gradually smaller quads there, down to 1/4 size. 0 keeps every quad the "
+                    "same size; detail too fine to keep is smoothed over",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
     )
     hide_original: BoolProperty(
         name="Hide Original",

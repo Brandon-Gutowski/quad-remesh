@@ -39,7 +39,8 @@ class QR_PT_main(bpy.types.Panel):
         try:
             h, area = bridge.target_edge_length(context, ob)
             if h > 0:
-                layout.label(text=f"~{int(round(area / (h * h))):,} quads, edge {h:.3g} m")
+                more = "+" if (st.detail > 0 or st.adapt_thin) else ""
+                layout.label(text=f"~{int(round(area / (h * h))):,}{more} quads, edge {h:.3g} m")
         except Exception:
             pass
 
@@ -75,6 +76,7 @@ class QR_PT_main(bpy.types.Panel):
         box.prop(st, "pure_quads")
         box.prop(st, "cleanup")
         box.prop(st, "adapt_thin")
+        box.prop(st, "detail", slider=True)
         box.prop(st, "relax_iterations")
         box.prop(st, "hide_original")
 

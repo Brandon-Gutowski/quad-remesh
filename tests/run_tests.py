@@ -176,6 +176,59 @@ class CoreQuality(unittest.TestCase):
         self.assertEqual(res.metrics["ngons"], 0)
 
 
+def run_ui_defaults(name, density=20.0, **kw):
+    """Run like the add-on does by default: input prep, thin-part refinement
+    and Detail 0.5."""
+    from quad_remesh import prep
+    V, F = getattr(meshes, name)()
+    a = area_of(V, F)
+    h = math.sqrt(a) / density
+    params = dict(prepare_fn=prep.prepare, adapt_thin=True, detail=0.5)
+    params.update(kw)
+    return pipeline.run(V, F, pipeline.Params(target_edge=h, **params)), h
+
+
+class CadRobustness(unittest.TestCase):
+    """Tessellated-CAD situations: thin shells, dense ridges, sliver triangles."""
+
+    def check_clean(self, m, max_flips, max_stars=0):
+        self.assertEqual(m["quad_ratio"], 1.0)
+        self.assertEqual(m.get("holes", 0), 0, "no holes")
+        self.assertEqual(m["nonmanifold_edges"], 0)
+        self.assertLessEqual(m["v6plus"], max_stars, "no stars")
+        self.assertLessEqual(m.get("flipped", 0), max_flips)
+
+    def test_thin_shell_is_refined_as_a_whole(self):
+        res, h = run_ui_defaults("thin_cap")
+        # one star may remain where four creases meet (rim corners)
+        self.check_clean(res.metrics, max_flips=10, max_stars=1)
+        self.assertLess(res.metrics["edge_cv"], 0.2, "one even size across the thin part")
+
+    def test_knurling_finer_than_quads(self):
+        res, h = run_ui_defaults("knurled_cap")
+        self.check_clean(res.metrics, max_flips=3)
+
+    def test_sliver_triangulation(self):
+        res, h = run_ui_defaults("sliver_box")
+        self.check_clean(res.metrics, max_flips=6)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(ROOT, "test_geo", "Diageo_750ml_Gilbeys_Bottle_v001.fbx")),
+                         "CAD sample not present")
+    def test_bottle_fbx_parts(self):
+        import subprocess
+        out = subprocess.run(
+            [bpy.app.binary_path, "-b", "--factory-startup", "--python", os.path.join(ROOT, "tests", "cad_compare.py"),
+             "--", os.path.join(ROOT, "test_geo", "Diageo_750ml_Gilbeys_Bottle_v001.fbx"), "20",
+             "detail=0.5", "adapt_thin=True"], capture_output=True, text=True, timeout=1800).stdout
+        rows = [ln for ln in out.splitlines() if " tris " in ln]
+        self.assertEqual(len(rows), 6, out)
+        for ln in rows:
+            holes = int(ln.split("holes")[1].split()[0])
+            nm = int(ln.split(" nm ")[1].split()[0])
+            self.assertEqual(nm, 0, ln)
+            self.assertLessEqual(holes, 10, ln)
+
+
 class AddonIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

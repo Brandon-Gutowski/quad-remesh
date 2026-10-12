@@ -66,7 +66,8 @@ def summary(m):
     return (f"{m['faces']} faces, {100 * m['quad_ratio']:.1f}% quads "
             f"(tris {m['tris']}, ngons {m['ngons']}) | irregular verts: "
             f"v3={m['v3']} v5={m['v5']} v6+={m['v6plus']} | edge CV {m['edge_cv']:.2f}, "
-            f"angle dev {m['angle_dev']:.1f}°" + (f" | flipped {m['flipped']}" if m.get('flipped') else ""))
+            f"angle dev {m['angle_dev']:.1f}°" + (f" | flipped {m['flipped']}" if m.get('flipped') else "")
+            + (f" | holes {m['holes']}" if m.get('holes') else ""))
 
 
 def flipped_faces(V, faces, surf_proj, comp=None):
@@ -95,3 +96,22 @@ def flipped_faces(V, faces, surf_proj, comp=None):
         fold = (np.einsum("kmj,kj->km", corner_n, fn) <= 0).any(1)
         bad.extend(idx[neg | fold].tolist())
     return sorted(bad)
+
+
+def unexpected_boundary(V, faces, bnd_proj, size_fn):
+    """Open edges of the result that do not run along an opening of the input
+    (i.e. holes). `size_fn(points)` gives the local quad size."""
+    V = np.asarray(V)
+    count = {}
+    for f in faces:
+        for k in range(len(f)):
+            e = ekey(f[k], f[(k + 1) % len(f)])
+            count[e] = count.get(e, 0) + 1
+    open_e = np.array([e for e, c in count.items() if c == 1], dtype=np.int64).reshape(-1, 2)
+    if not len(open_e):
+        return 0
+    mid = 0.5 * (V[open_e[:, 0]] + V[open_e[:, 1]])
+    if bnd_proj is None or bnd_proj.empty:
+        return int(len(open_e))
+    _, dist, _ = bnd_proj.project(mid)
+    return int((dist > 0.5 * np.asarray(size_fn(mid))).sum())

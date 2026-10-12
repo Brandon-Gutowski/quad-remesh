@@ -11,14 +11,15 @@ import numpy as np
 
 from . import cleanup, metrics, quadify, symmetry
 from .extract import _components, extract_mesh
-from .features import Features
+from .features import Features, transfer_features
 from .hierarchy import build_hierarchy
 from .mesh_data import TriMesh, clean, smooth_normals, split_long_edges
 from .orientation import solve_orientation
 from .polymesh import PolyMesh
 from .position import solve_position
 from .relax import relax, untangle
-from .scale import scale_field, thin_part_limit
+from .scale import (apply_size_points, detail_size_points, drop_unresolvable_features,
+                    limit_gradient, scale_field)
 from .quantize import quantize_fine
 from .spatial import PointIndex, SegmentProjector, SurfaceProjector
 
@@ -39,6 +40,8 @@ class Params:
     adapt_thin: bool = False
     quantize: bool = True
     symmetry_plane: tuple = None   # (point, unit normal); keeps the + side and mirrors it
+    detail: float = 0.0            # 0 = uniform quads; 1 = down to 1/4 size where detail needs it
+    prepare_fn: object = None      # (V, F, edge_target) -> (V, F): simplify/clean the field mesh
 
 
 @dataclass
@@ -98,7 +101,7 @@ def guide_constraints(mesh, guides, radius, strength):
 
 def remesh(V, F, params):
     if params.symmetry_plane is None:
-        return (yield from _remesh(V, F, params))
+        return (yield from _remesh_parts(V, F, params))
     p0 = np.asarray(params.symmetry_plane[0], dtype=np.float64)
     nrm = np.asarray(params.symmetry_plane[1], dtype=np.float64)
     nrm = nrm / np.linalg.norm(nrm)
@@ -108,7 +111,7 @@ def remesh(V, F, params):
         raise ValueError("Nothing on the positive side of the symmetry plane")
     half = replace(params, symmetry_plane=None, marked_pairs=marked,
                    guides=symmetry.fold_guides(params.guides, p0, nrm))
-    res = yield from _remesh(Vh, Fh, half)
+    res = yield from _remesh_parts(Vh, Fh, half)
     yield ("Mirroring", 0.99)
     Vm, faces, fe = symmetry.mirror_weld(res.V, res.faces, res.feature_edges, p0, nrm,
                                          seam_tol=0.6 * params.target_edge)
@@ -126,27 +129,211 @@ def remesh(V, F, params):
     return Result(Vm, faces, m, fe)
 
 
+def _components_of(n, edges):
+    lab = _components(n, edges[:, 0], edges[:, 1])
+    return np.unique(lab, return_inverse=True)[1].reshape(-1)
+
+
+def _map_components(mesh, surf, n_samples=24):
+    """Label each vertex of `mesh` with the reference component it lies on
+    (majority vote per connected piece of `mesh`)."""
+    own = _components_of(len(mesh.V), mesh.edges)
+    out = np.zeros(len(mesh.V), dtype=np.int64)
+    for c in np.unique(own):
+        idx = np.nonzero(own == c)[0]
+        pick = idx[np.linspace(0, len(idx) - 1, min(n_samples, len(idx))).astype(int)]
+        out[idx] = np.bincount(surf.component_of(mesh.V[pick])).argmax()
+    return out
+
+
+def _scaled(gen, p0, p1):
+    """Re-map a sub-generator's progress into [p0, p1] and return its value."""
+    while True:
+        try:
+            stage, p = next(gen)
+            yield (stage, p0 + (p1 - p0) * p)
+        except StopIteration as stop:
+            return stop.value
+
+
+def _remesh_parts(V, F, params, cell_per_thickness=1.3, thin_frac=0.6, floor=0.15):
+    """Whole-part refinement: pieces mostly thinner than a lattice cell are
+    remeshed on their own at a smaller *uniform* size (no size transitions
+    inside a piece, so no holes or extra poles); everything else together at
+    the requested size."""
+    if not params.adapt_thin:
+        return (yield from _remesh(V, F, params))
+    yield ("Measuring thickness", 0.0)
+    V, F, marked = clean(V, F, params.marked_pairs)
+    if not len(F):
+        raise ValueError("Mesh has no faces")
+    mesh = TriMesh(V, F)
+    comp = _components_of(len(V), mesh.edges)
+    surf = SurfaceProjector(V, F, comp[F[:, 0]])
+    h = float(params.target_edge)
+    cell = 2.0 * h if params.pure_quads else h
+    # Sample points spread over the faces (by area) with their face normals:
+    # vertex samples sit on rims and corners of coarse CAD meshes, where the
+    # averaged normal points diagonally out of the wall.
+    rng = np.random.default_rng(0)
+    ns = min(30000, max(2000, 4 * len(F)))
+    fi = rng.choice(len(F), size=ns, p=mesh.face_area / mesh.face_area.sum())
+    bary = rng.dirichlet((1.0, 1.0, 1.0), size=ns)
+    P = np.einsum("ij,ijk->ik", bary, V[F[fi]])
+    thick = surf.ray_thickness(P, mesh.face_normal[fi], comp[F[fi, 0]])
+    need = cell_per_thickness * thick
+    scomp = comp[F[fi, 0]]
+    groups = {}                       # target edge -> list of components
+    for c in np.unique(comp):
+        m = scomp == c
+        thin = need[m] < cell
+        if m.any() and thin.mean() >= thin_frac:
+            size = max(float(np.median(need[m][thin])), floor * cell)
+            groups.setdefault(h * size / cell, []).append(c)
+        else:
+            groups.setdefault(h, []).append(c)
+    if len(groups) == 1 and h in groups:
+        return (yield from _remesh(V, F, replace(params, marked_pairs=marked)))
+
+    results = []
+    keys = sorted(groups)
+    for gi, he in enumerate(keys):
+        keep_v = np.isin(comp, groups[he])
+        keep_f = keep_v[F[:, 0]]
+        remap = np.cumsum(keep_v) - 1
+        Vg, Fg = V[keep_v], remap[F[keep_f]]
+        mg = None
+        if marked is not None and len(marked):
+            mm = marked[keep_v[marked[:, 0]] & keep_v[marked[:, 1]]]
+            mg = remap[mm] if len(mm) else None
+        # Thin pieces are already meshed far finer than any detail floor;
+        # graded detail on top of that only destabilises them.
+        sub = replace(params, target_edge=he, marked_pairs=mg,
+                      detail=params.detail if he == h else 0.0)
+        res = yield from _scaled(_remesh(Vg, Fg, sub), gi / len(keys), (gi + 1) / len(keys))
+        results.append(res)
+    if len(results) == 1:
+        return results[0]
+    # Combine the pieces.
+    Vs, faces, fe, off = [], [], set(), 0
+    for r in results:
+        Vs.append(r.V)
+        faces += [[v + off for v in f] for f in r.faces]
+        fe |= {(a + off, b + off) for a, b in r.feature_edges}
+        off += len(r.V)
+    Vall = np.vstack(Vs)
+    m = metrics.compute(Vall, faces, surf)
+    m["holes"] = sum(r.metrics.get("holes", 0) for r in results)
+    m["method"] = "+".join(sorted({r.metrics.get("method", "") for r in results}))
+    return Result(Vall, faces, m, fe)
+
+
 def _remesh(V, F, params):
     h = float(params.target_edge)
     scale = 2.0 * h if params.pure_quads else h
+    cell_per_quad = scale / h
 
     yield ("Preparing mesh", 0.0)
     V, F, marked = clean(V, F, params.marked_pairs)
     if not len(F):
         raise ValueError("Mesh has no faces")
-    V, F, marked = split_long_edges(V, F, scale / 3.0, marked)
-    mesh = TriMesh(V, F)
-    lab = _components(len(mesh.V), mesh.edges[:, 0], mesh.edges[:, 1])
-    _, vcomp = np.unique(lab, return_inverse=True)
-    vcomp = vcomp.reshape(-1)
-    surf = SurfaceProjector(mesh.V, mesh.F, vcomp[mesh.F[:, 0]])
 
-    yield ("Detecting sharp edges", 0.04)
-    feats = Features(mesh, params.sharp_angle if params.detect_sharp else None, marked, scale=scale)
-    seg = SegmentProjector(feats.segments, scale / 8.0, vcomp[feats.feature_edges[:, 0]]) if feats.any else None
+    # Reference surface: the original, used for projection, feature curves,
+    # thickness and detail. The solvers run on a separate field mesh.
+    use_ref = params.prepare_fn is not None
+    # (Thin pieces were already given their own uniform size by _remesh_parts.)
+    sizing = params.detail > 0
+    detail_min = scale * (1.0 - 0.75 * min(max(params.detail, 0.0), 1.0))
+    size_pts, size_vals = [], []
+
+    def measure_sizes(dmesh, dmask):
+        """Size requests (per point) from surface detail."""
+        p, v = detail_size_points(dmesh, dmask, detail_min, scale, cell_per_quad)
+        size_pts.append(p)
+        size_vals.append(v)
+
+    if use_ref:
+        ref = TriMesh(V, F)
+        ref_comp = _components_of(len(ref.V), ref.edges)
+        surf = SurfaceProjector(ref.V, ref.F, ref_comp[ref.F[:, 0]])
+        yield ("Detecting sharp edges", 0.02)
+        ref_feats = Features(ref, params.sharp_angle if params.detect_sharp else None, marked, scale=scale)
+        seg = (SegmentProjector(ref_feats.segments, scale / 8.0, ref_comp[ref_feats.feature_edges[:, 0]])
+               if ref_feats.any else None)
+        if sizing:
+            yield ("Measuring detail", 0.03)
+            # evenly tessellated copy at the finest resolution detail may need
+            dV, dF = params.prepare_fn(ref.V, ref.F, 0.5 * detail_min / cell_per_quad)
+            dmesh = TriMesh(*clean(dV, dF)[:2])
+            measure_sizes(dmesh, transfer_features(dmesh, seg))
+        finest = min([scale] + [float(v.min()) for v in size_vals if len(v)])
+        yield ("Simplifying input", 0.05)
+        Vf, Ff = params.prepare_fn(ref.V, ref.F, finest / 3.0)
+        Vf, Ff, _ = clean(Vf, Ff)
+        Vf, Ff, _ = split_long_edges(Vf, Ff, scale / 3.0)
+        mesh = TriMesh(Vf, Ff)
+        vcomp = _map_components(mesh, surf)
+    else:
+        V, F, marked = split_long_edges(V, F, scale / 3.0, marked)
+        mesh = TriMesh(V, F)
+        vcomp = _components_of(len(mesh.V), mesh.edges)
+        surf = SurfaceProjector(mesh.V, mesh.F, vcomp[mesh.F[:, 0]])
+        ref, ref_feats = mesh, None
+
+    def field_features(mesh, vcomp, marked):
+        if use_ref:
+            mask = transfer_features(mesh, seg, vcomp)
+            return Features(mesh, mask=mask, scale=scale)
+        return Features(mesh, params.sharp_angle if params.detect_sharp else None, marked, scale=scale)
+
+    yield ("Detecting sharp edges", 0.06)
+    feats = field_features(mesh, vcomp, marked)
+    if not use_ref:
+        seg = (SegmentProjector(feats.segments, scale / 8.0, vcomp[feats.feature_edges[:, 0]])
+               if feats.any else None)
+        ref_feats = feats
+        if sizing:
+            yield ("Measuring detail", 0.07)
+            measure_sizes(mesh, feats.edge_mask)
+
+    # Size field (lattice cell per vertex): thin parts and fine detail ask for
+    # smaller cells; the gradient limit keeps every change gradual.
+    hv = np.full(len(mesh.V), scale)
+    if sizing:
+        for p, v in zip(size_pts, size_vals):
+            hv = apply_size_points(mesh.V, hv, p, v)
+        hv = limit_gradient(mesh.V, mesh.edges, hv)
+        if hv.min() < 0.9 * scale:
+            # Refine the field mesh where cells got smaller, and put the new
+            # vertices on the real surface so fine detail is seen by the fields.
+            n0 = len(mesh.V)
+            out = split_long_edges(mesh.V, mesh.F, None, None if use_ref else marked, vlimit=hv / 3.0)
+            Vr, Fr, marked_r, lim = out
+            hv = 3.0 * lim
+            if not use_ref:
+                marked = marked_r
+            mesh0 = TriMesh(Vr, Fr)
+            comps_new = _map_components(mesh0, surf) if use_ref else _components_of(len(Vr), mesh0.edges)
+            if len(Vr) > n0:
+                Vr[n0:], _ = surf.project(Vr[n0:], comps_new[n0:])
+            mesh = TriMesh(Vr, Fr)
+            vcomp = comps_new
+            feats = field_features(mesh, vcomp, marked)
+            if not use_ref:
+                seg = (SegmentProjector(feats.segments, scale / 8.0, vcomp[feats.feature_edges[:, 0]])
+                       if feats.any else None)
+            hv = limit_gradient(mesh.V, mesh.edges, hv)
+
+    # Feature curves packed closer than the lattice can resolve are smoothed over.
+    kept = drop_unresolvable_features(mesh, feats.edge_mask, hv)
+    if (kept != feats.edge_mask).any():
+        feats = Features(mesh, mask=kept, scale=scale)
+    if use_ref or (kept != feats.edge_mask).any():
+        seg = (SegmentProjector(feats.segments, scale / 8.0, vcomp[feats.feature_edges[:, 0]])
+               if feats.any else None)
 
     yield ("Building hierarchy", 0.08)
-    N = smooth_normals(mesh, feats.edge_mask, 0.25 * scale)
+    N = smooth_normals(mesh, feats.edge_mask, 0.25 * float(np.median(hv)))
     levels = build_hierarchy(mesh.V, N, mesh.vertex_area, mesh.ei, mesh.ej)
 
     line_mask = feats.is_feature & ~feats.is_corner
@@ -169,9 +356,8 @@ def _remesh(V, F, params):
             break
 
     yield ("Fitting quad sizes", 0.35)
-    hv = scale_field(mesh, N, Q, scale, params.size_flexibility)
-    if params.adapt_thin:
-        hv = thin_part_limit(mesh, N, hv, surf, vcomp)
+    if params.size_flexibility > 0:
+        hv = hv * (scale_field(mesh, N, Q, scale, params.size_flexibility) / scale)
     index = PointIndex(mesh.V)
 
     def size_at(pts, factor=1.0):
@@ -186,9 +372,13 @@ def _remesh(V, F, params):
             O, Q = stop.value
             break
 
+    bnd_e = ref.edges[ref.edge_face_count == 1]
+    bnd_proj = (SegmentProjector(np.stack([ref.V[bnd_e[:, 0]], ref.V[bnd_e[:, 1]]], 1), scale / 8.0)
+                if len(bnd_e) else None)
     ctx = dict(mesh=mesh, N=N, Q=Q, O=O, hv=hv, feats=feats, vcomp=vcomp, surf=surf, seg=seg,
+               bnd_proj=bnd_proj,
                size_at=size_at, h=h, scale=scale, params=params)
-    expected = mesh.area / (h * h)
+    expected = float((mesh.vertex_area / (hv / cell_per_quad) ** 2).sum())
     if params.quantize:
         result = yield from _finish(ctx, quantized=True, p0=0.67, p1=0.82)
         if _suspicious(result.metrics, expected):
@@ -201,7 +391,7 @@ def _remesh(V, F, params):
 
 
 def _suspicious(m, expected):
-    return (m["v6plus"] > 0 or m.get("flipped", 0) > 0 or m["edge_cv"] > 0.3
+    return (m["v6plus"] > 0 or m.get("flipped", 0) > 0 or m.get("holes", 0) > 0 or m["edge_cv"] > 0.3
             or abs(m["faces"] / max(expected, 1.0) - 1.0) > 0.15)
 
 
@@ -209,7 +399,7 @@ def _score(m, expected):
     """Lower is better: poles first, then defects that look broken."""
     s = m["v3"] + m["v5"] + 4.0 * m["v6plus"]
     s += 5.0 * m.get("flipped", 0)
-    s += 0.5 * m["boundary_edges"]
+    s += 5.0 * m.get("holes", 0)
     s += 60.0 * max(0.0, m["edge_cv"] - 0.25)
     s += 80.0 * max(0.0, abs(m["faces"] / max(expected, 1.0) - 1.0) - 0.15)
     return s
@@ -281,11 +471,18 @@ def _finish(ctx, quantized, p0, p1):
     pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner,
                  iterations=max(1, params.relax_iterations - params.relax_iterations // 2), comp=pm.comp,
                  size_fn=final_size)
+    # Stars left over: rotate one of their edges away (judged on relaxed
+    # geometry, where the new diagonal's length is meaningful), then settle.
+    if cleanup.break_stars(pm):
+        pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner, iterations=3,
+                     comp=pm.comp, size_fn=final_size)
     if params.untangle:
         yield ("Untangling", prog(0.9))
         pm.V = untangle(pm.V, pm.faces, surf, seg, pm.feat, pm.corner, pm.comp)
 
     m = metrics.compute(pm.V, pm.faces, surf, comp=pm.comp)
+    m["holes"] = metrics.unexpected_boundary(pm.V, pm.faces, ctx["bnd_proj"],
+                                             lambda pts: final_size(pts))
     m["method"] = "quantized" if quantized else "classic"
     return Result(pm.V, pm.faces, m, set(pm.feature_edges))
 

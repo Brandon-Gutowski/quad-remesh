@@ -29,7 +29,8 @@ Pure Python + NumPy: nothing to compile, installs as a single zip.
 | **Strength** | How strongly the guides steer the flow (1 = hard constraint). |
 | **Pure Quads** | Guarantees zero triangles and n-gons. |
 | **Reduce Poles** | Globally straightens the grid (removes lattice dislocations) and runs topology clean-up. |
-| **Refine Thin Parts** | Uses smaller quads where the part is thinner than a quad (ears, fins, cloth). Adds a few poles at the size transitions, so it's off by default. |
+| **Refine Thin Parts** | Separate pieces thinner than a quad (caps, shells, fins, glass walls) are remeshed at their own smaller, even quad size so both sides and the rim stay clean. Adds faces on those pieces only. On by default. |
+| **Detail** | Keeps detail smaller than a quad (small fillets, ridges, embossing) by using gradually smaller quads there, down to 1/4 size. 0 keeps every quad the same size. Default 0.5. Detail too fine to keep (e.g. knurling far below the quad size) is smoothed over instead of producing broken geometry. |
 | **Relax** | Iterations that even out quad shape and size. |
 | **Remesh** | Runs in the background with a progress bar (Esc cancels). Creates `<name>_Quad`, and running it again updates that same object. Feature edges are marked sharp on the result. |
 
@@ -37,6 +38,8 @@ Modifiers are applied: the evaluated mesh is what gets remeshed. The source obje
 changed. Use **Toggle Original** to compare.
 
 ## How it works
+
+0. **Input preparation (CAD-friendly):** a non-destructive clean-up welds only identical vertices and never deletes triangles. Very dense inputs are simplified to an even "field mesh" the solvers run on: Blender's decimator, then evening out (split long / safely collapse short / flip), with Blender's voxel remesher as a fallback for closed parts the decimator leaves too uneven. Projection, sharp edges and detail always come from the original mesh.
 
 1. **Prepare:** merge duplicates and refine long edges. Detect sharp, marked and boundary feature curves (scale-aware, so noise is rejected). Smooth normals for the field.
 2. **Orientation field:** an extrinsic 4-RoSy cross field (Instant Meshes), solved coarse-to-fine on a multiresolution hierarchy. Features are hard constraints and guides are soft or hard constraints.
@@ -61,11 +64,14 @@ vertices). The tool keeps everything beyond that to a minimum.
 
 ## Known limitations
 
-- Parts thinner than a quad (Suzanne's ears at low density) can collapse or flip. Raise
-  Density or enable **Refine Thin Parts**.
+- Thin pieces get one smaller quad size for the whole piece, so their face count can rise a
+  lot (a cap shell 1/5 of a quad thick gets ~40x more quads). Thin spots on otherwise thick
+  pieces (Suzanne's ears) are not refined locally; raise Density there.
+- Detail finer than 1/4 of a quad (knurling, threads) is smoothed over.
 - Separate shells that intersect each other (e.g. eyeballs pushed into a head) are remeshed
   independently but can look rough where they meet.
-- Speed: about 1–4 s for typical inputs, about 10–20 s for 60k-triangle inputs at high density.
+- Speed: about 1–5 s for typical parts. A 1M-triangle bottle takes ~6 s at density 20, or
+  ~60 s when its thin glass wall triggers refinement to ~17k quads.
 - Low-poly inputs where many faceted edges exceed the angle threshold: lower the angle, or
   turn off *By Angle* and mark the sharp edges you want.
 

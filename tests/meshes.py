@@ -110,3 +110,70 @@ def smooth_monkey(levels=2):
 
 def big_monkey():
     return smooth_monkey(levels=3)
+
+
+def _evaluated(ob):
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = ob.evaluated_get(dg)
+    m2 = ev.to_mesh()
+    bm = bmesh.new()
+    bm.from_mesh(m2)
+    ev.to_mesh_clear()
+    me = ob.data
+    bpy.data.objects.remove(ob)
+    bpy.data.meshes.remove(me)
+    bm.verts.index_update()
+    return _from_bm(bm)
+
+
+def thin_cap(radius=1.0, height=0.6, wall=0.04, seg=96):
+    """Bottle-cap shell: open at the bottom, wall about 0.2 of a quad at density 20."""
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=seg, radius1=radius,
+                          radius2=radius, depth=height)
+    bottom = min(bm.faces, key=lambda f: f.calc_center_median().z)
+    bmesh.ops.delete(bm, geom=[bottom], context='FACES_ONLY')
+    me = bpy.data.meshes.new("cap")
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new("cap", me)
+    bpy.context.scene.collection.objects.link(ob)
+    mod = ob.modifiers.new("s", 'SOLIDIFY')
+    mod.thickness = wall
+    return _evaluated(ob)
+
+
+def knurled_cap(radius=1.0, height=0.6, ridges=120, depth=0.03, rings=12):
+    """Closed cylinder with sharp knurling ridges far finer than a quad."""
+    import math
+    bm = bmesh.new()
+    n = ridges * 2
+    rows = []
+    for j in range(rings + 1):
+        z = -height / 2 + height * j / rings
+        row = []
+        for i in range(n):
+            a = 2 * math.pi * i / n
+            r = radius + (depth if i % 2 else 0.0)
+            row.append(bm.verts.new((r * math.cos(a), r * math.sin(a), z)))
+        rows.append(row)
+    for j in range(rings):
+        for i in range(n):
+            bm.faces.new((rows[j][i], rows[j][(i + 1) % n], rows[j + 1][(i + 1) % n], rows[j + 1][i]))
+    bm.faces.new(list(reversed(rows[0])))
+    bm.faces.new(rows[-1])
+    bm.normal_update()
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    bm.verts.index_update()
+    return _from_bm(bm)
+
+
+def sliver_box(size=2.0, cuts=24):
+    """Cube whose faces are fan-triangulated into long needle triangles, like
+    a CAD export."""
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=size)
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cuts, use_grid_fill=False)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:], quad_method='FIXED', ngon_method='EAR_CLIP')
+    bm.verts.index_update()
+    return _from_bm(bm)
