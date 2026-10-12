@@ -3,3 +3,4 @@ __pycache__/
 *.zip
 .DS_Store
 dist/
+test_geo/
