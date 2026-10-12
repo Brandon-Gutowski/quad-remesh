@@ -83,13 +83,14 @@ def _self_overlap(P, tol, skip=4):
     return False
 
 
-def concentric_rings(poly, surf, comp, step, outside=1, inside=0, others=None):
+def concentric_rings(poly, surf, comp, step, outside=1, inside=0, others=None, rim_q=1.0):
     """Offset copies of a closed stroke on the surface, `step` apart (one
     lattice cell), `outside` of them away from the area it encloses and
     `inside` towards it. A side stops early (keeping the rings made so far)
-    when a ring would run off the surface (an opening or a rim), come within
-    0.75 step of another stroke (`others`: PointIndex over their points, or
-    None), fold onto itself, or (inside) shrink below 6 cells around.
+    when a ring would run off the surface (an opening or a rim: more than a
+    1-rim_q fraction of its points do), come within 0.75 step of another
+    stroke (`others`: PointIndex over their points, or None), fold onto
+    itself, or (inside) shrink below 6 cells around.
     Returns closed polylines (first point repeated)."""
     sub = 0.25 * step
     P = _resample_closed(np.asarray(poly, dtype=np.float64)[:-1], sub)
@@ -108,7 +109,7 @@ def concentric_rings(poly, surf, comp, step, outside=1, inside=0, others=None):
                 c = np.full(len(Q), comp)
                 target = Q + direction * _side(Q, surf, c) * sub
                 proj, _ = surf.project(target, c)
-                if np.linalg.norm(proj - target, axis=1).max() > 0.5 * sub:
+                if np.quantile(np.linalg.norm(proj - target, axis=1), rim_q) > 0.5 * sub:
                     ok = False                      # ran onto an opening, rim or crease
                     break
                 Q = _resample_closed(proj, sub)
@@ -340,18 +341,35 @@ def trace_loops(pm, polys, comps, gproj, size_fn):
     cost = _stroke_cost(pm.V, pm.comp, gproj, off_w=6.0)
 
     snapped, protected = 0, set()
-    keep_all = set(np.nonzero(pm.corner)[0].tolist())
+    corners = np.nonzero(pm.corner)[0]
+    keep_all = set(corners.tolist())
     for poly, c in zip(polys, comps):
         step = 0.5 * float(np.median(size_fn(poly)))
         pts, _ = resample(poly, step)
         verts = [_nearest_in(index, p, pm.comp, c) for p in pts]
+        # snap onto this stroke only (strokes may pass close to each other)
+        own = SegmentProjector(np.stack([poly[:-1], poly[1:]], 1), step / 4.0)
+        # Corners of sharp features stay where they are, so a path through
+        # one beside the stroke (e.g. where a lip crease ends at a mouth
+        # corner) would take the loop off the stroke: go around it if possible.
+        avoid = set()
+        if len(corners):
+            _, dc, _ = own.project(pm.V[corners])
+            avoid = set(corners[dc > 0.5 * step].tolist())
+
+        def around(v, w, L):
+            return cost(v, w, L) + (40.0 * step if w in avoid else 0.0)
+
         path_v, path_e = set(), set()
         cur = verts[0]
         for v in verts[1:]:
             if v == cur:
                 continue
             seg = np.linalg.norm(pm.V[v] - pm.V[cur])
-            p = _path(adj, cur, v, cost, 20.0 * seg + 8.0 * step)
+            limit = 20.0 * seg + 8.0 * step
+            p = _path(adj, cur, v, around, limit) if avoid else None
+            if p is None or avoid.intersection(p):
+                p = _path(adj, cur, v, cost, limit)
             if p is None:
                 cur = v
                 continue
@@ -361,12 +379,11 @@ def trace_loops(pm, polys, comps, gproj, size_fn):
             cur = v
         if not path_v:
             continue
-        # snap onto this stroke only (strokes may pass close to each other)
-        own = SegmentProjector(np.stack([poly[:-1], poly[1:]], 1), step / 4.0)
         pv = np.array(sorted(path_v), dtype=np.int64)
-        pv = pv[~pm.corner[pv]]
         P, d, _ = own.project(pm.V[pv])
-        ok = d < 2.0 * np.asarray(size_fn(pm.V[pv]))
+        # a corner this close is where its sharp feature crosses the stroke:
+        # it moves onto the stroke (and stays a corner); farther ones stay put
+        ok = np.where(pm.corner[pv], d <= 0.5 * step, d < 2.0 * np.asarray(size_fn(pm.V[pv])))
         pm.V[pv[ok]] = P[ok]
         pm.feat[pv[ok]] = True
         keep = set(pv[ok].tolist()) | keep_all

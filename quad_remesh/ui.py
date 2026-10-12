@@ -73,7 +73,10 @@ class QR_PT_main(bpy.types.Panel):
         sub.prop(st, "guide_strength", slider=True)
         row = sub.row(align=True)
         row.prop(st, "guide_rings_out", text="Rings Out")
-        row.prop(st, "guide_rings_in", text="In")
+        col = row.row(align=True)
+        col.active = not st.guide_fill_inside
+        col.prop(st, "guide_rings_in", text="In")
+        sub.prop(st, "guide_fill_inside")
 
         box = layout.box()
         box.label(text="Quality", icon='MESH_GRID')

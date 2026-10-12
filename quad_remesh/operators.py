@@ -24,6 +24,7 @@ def _params(context, obj):
         guide_strength=st.guide_strength,
         guide_rings_out=st.guide_rings_out,
         guide_rings_in=st.guide_rings_in,
+        guide_fill_inside=st.guide_fill_inside,
         pure_quads=st.pure_quads,
         relax_iterations=st.relax_iterations,
         cleanup=st.cleanup,

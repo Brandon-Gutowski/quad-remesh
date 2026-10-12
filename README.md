@@ -26,7 +26,8 @@ Pure Python + NumPy: nothing to compile, installs as a single zip.
 | **Follow Marked Sharp Edges** | Treats edges you marked with *Edge › Mark Sharp* as features. |
 | **Symmetry** + **X / Y / Z** | Remeshes one half and mirrors it, so the result is exactly symmetric with an edge loop on the mirror plane. The plane goes through the object origin, perpendicular to the chosen local axis (like the Mirror modifier), and the + side is the one remeshed. While Symmetry is on, **Draw Guides mirrors each stroke** across the axis as you draw (a fainter preview shows the copy, and erasing removes both). A stroke that reaches the mirror line **joins its mirror image there**, just like a loop closes: draw half a mouth ring from the centre line and back and you get the whole symmetric ring; draw a brow line out from the centre and it runs across both sides. Anything drawn past the line is trimmed. Strokes along the centre line are kept as drawn. |
 | **Draw Guides** | Click it, then **LMB-drag** on the surface to draw a stroke; the result gets an **edge loop along every stroke**. End a stroke back where it started (the preview closes) to make a **closed ring**, e.g. around an eye or the mouth. **Shift+LMB-drag** erases and **Enter/RMB/Esc** finishes. Strokes are stored in a curve object (`QR_Guides_<name>`), so you can edit them too; cyclic splines are rings. Any curve object can be used as guides. |
-| **Rings Out / In** | Extra **full edge loops** around (and inside) every closed guide, one lattice cell apart (two quad rows with Pure Quads): the concentric rings you want around eyes and mouths. Default 1 outside, 0 inside. A ring is left out where it would run into an opening, another guide, or get too small; when the rings of two guides would collide (eyes close together), both are left out, so the result stays even. |
+| **Rings Out / In** | Extra **full edge loops** around (and inside) every closed guide, one lattice cell apart (two quad rows with Pure Quads): the concentric rings you want around eyes and mouths. Default 1 outside, 0 inside (*In* is used only with Fill Inside off). A ring is left out where it would run into an opening, another guide, or get too small; when the rings of two guides would collide (eyes close together), both are left out, so the result stays even. |
+| **Fill Inside** | Rebuilds the inside of every closed guide as **concentric loops one quad apart, around a small grid**: every loop has as many vertices as the guide's loop, so the spokes run straight in, and the grid's four corners are the only poles inside. The loops are marched across the surface, so they follow sockets and lids. Skipped (the inside is left to the flow) for a ring around an opening or a sharp edge. On by default. |
 | **Joining strokes** | A stroke that starts or ends at the end of another open stroke snaps onto it and they become one stroke (ending on both ends of the same stroke closes it into a ring). Hold **Ctrl** while drawing to keep a stroke exactly as drawn: no snapping, no joining at the mirror line and no auto-closing. |
 | **Stroke Smoothing** | Takes the hand wobble out of newly drawn strokes (wiggles up to ~1.5 quads long at 1). Rings keep their size and open strokes keep their ends. 0 keeps strokes exactly as drawn. Default 0.5. |
 | **Influence** | How far around each guide the flow bends to follow it. The loop on the guide is always kept; 0 = just the loop, 1 = the flow runs parallel to it up to ~4 quads away (concentric rings). |
@@ -50,6 +51,7 @@ changed. Use **Toggle Original** to compare.
 4. **Position field:** a 4-PoSy lattice whose spacing comes from Density. Lattice lines are pinned onto feature curves and guide strokes.
 5. **Global quantization:** integer lattice dislocations (which would become valence 3/5 pairs) are cancelled along fold-free paths. This uses capacity limits and orientation checks, in the style of QuadriFlow. Quads are then rebuilt combinatorially from the corrected lattice, and positions are re-solved by conjugate gradients.
 6. **Clean-up:** fill holes and seal every opening that is not an opening of the input (gaps are measured against the input's real boundary, of any size), pair odd faces, split n-gons, and do one midpoint subdivision for pure quads. Each guide is then traced as a continuous edge path through the result and snapped onto its stroke. Then edge rotation and diagonal collapse, shape-matching relaxation, reprojection (component- and normal-aware), and untangling.
+   **Ring fill:** a square lattice cannot give a closed guide clean rings inside it (each ring further in is shorter, so neighbouring rings never have the same edge count). So, before untangling, the faces inside each closed guide loop are replaced: offsets of the stroke are marched inward across the surface one quad apart, each sampled where the spokes from the loop land, and the innermost becomes the border of an a × b grid (a Coons patch, 2(a + b) = the loop's vertex count).
 7. **Safety net:** if the quantized result looks worse (holes, broken guide loops, stars, flips, size outliers), the classic extraction is also run and the better one is kept. Holes away from any input opening rule a result out.
 
 ## Results (from `tests/compare.py`)
@@ -75,8 +77,13 @@ vertices). The tool keeps everything beyond that to a minimum.
 - Separate shells that intersect each other (e.g. eyeballs pushed into a head) are remeshed
   independently but can look rough where they meet.
 - Each extra ring pushes the poles further out, so expect a few more of them around ringed areas.
-- A ring guide forces some poles inside it (a quad ring cannot close without them), and a ring
-  needs roughly 16+ quads around to come out clean; for small features, raise Density.
+- A ring guide forces some poles inside it (a quad ring cannot close without them): with Fill
+  Inside, exactly the four corners of the core grid. Every inner loop keeps the guide's vertex
+  count, so the quads get narrower towards the middle, and a ring needs roughly 16+ quads around
+  to come out clean; for small features, raise Density.
+- Fill Inside needs the guide's loop to wind once around a disk with no opening or sharp edge in
+  it. A mouth ring that crosses the symmetry plane is an open stroke on the remeshed half, so it is
+  not filled.
 - Speed: about 1–5 s for typical parts; a 250k-triangle sculpt takes ~13 s at density 50. A 1M-triangle bottle takes ~6 s at density 20, or
   ~60 s when its thin glass wall triggers refinement to ~17k quads.
 - Low-poly inputs where many faceted edges exceed the angle threshold: lower the angle, or

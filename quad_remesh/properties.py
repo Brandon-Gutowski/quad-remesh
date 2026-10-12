@@ -70,9 +70,17 @@ class QR_Settings(bpy.types.PropertyGroup):
     )
     guide_rings_in: IntProperty(
         name="Rings Inside",
-        description="Extra full edge loops inside every closed guide. Left out when the ring "
-                    "would get too small or run into an opening",
+        description="Extra full edge loops inside every closed guide (when Fill Inside is off). "
+                    "Left out when the ring would get too small or run into an opening",
         default=0, min=0, max=5,
+    )
+    guide_fill_inside: BoolProperty(
+        name="Fill Inside",
+        description="Rebuild the inside of every closed guide as concentric loops, one quad "
+                    "apart, around a small grid: spokes run straight in and the grid's four "
+                    "corners are the only poles inside. Skipped for a ring around an opening "
+                    "or a sharp edge",
+        default=True,
     )
     guide_smoothing: FloatProperty(
         name="Stroke Smoothing",

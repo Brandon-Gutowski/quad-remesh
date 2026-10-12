@@ -198,6 +198,51 @@ class CoreQuality(unittest.TestCase):
             self.assertTrue(cycle, "guide and its ring must both be closed edge loops")
             self.assertGreater(cover, 0.85)
 
+    def test_closed_guide_is_filled_with_rings(self):
+        # Inside a closed guide: concentric rings with radial spokes around a
+        # small grid, so its four corners are the only poles inside the loop.
+        from quad_remesh.core.polymesh import ekey
+        from quad_remesh.core.spatial import SurfaceProjector
+        V, F = meshes.blob_head()
+        h = math.sqrt(area_of(V, F)) / 40
+        sp = SurfaceProjector(V, F)
+        s = np.linspace(0, 2 * math.pi, 240)
+        cp, cn = sp.project(np.array([(0.38, -1, 0.3)], float))
+        cp, cn = cp[0], cn[0] / np.linalg.norm(cn[0])
+        u = np.cross(cn, [0.0, 0.0, 1.0]); u /= np.linalg.norm(u)
+        w = np.cross(cn, u)
+        eye = sp.project(cp + 0.4 * (np.cos(s)[:, None] * u + 0.8 * np.sin(s)[:, None] * w))[0]
+        eye[-1] = eye[0]
+
+        def inside_valences(res):
+            # vertices inside the ring (seen along its normal), off the loop itself
+            def plane(P):
+                return np.stack([(P - cp) @ u, (P - cp) @ w], 1)
+            L, P = plane(eye[:-1]), plane(res.V)
+            Lq = np.roll(L, 1, axis=0)
+            hit = ((L[None, :, 1] > P[:, None, 1]) != (Lq[None, :, 1] > P[:, None, 1])) & (
+                P[:, None, 0] < (Lq[:, 0] - L[:, 0])[None] * (P[:, None, 1] - L[None, :, 1])
+                / np.where(Lq[:, 1] == L[:, 1], 1e-30, Lq[:, 1] - L[:, 1])[None] + L[None, :, 0])
+            gp = SegmentProjector(np.stack([eye[:-1], eye[1:]], 1), h / 8)
+            _, d, _ = gp.project(res.V)
+            ins = (hit.sum(1) % 2 == 1) & (np.linalg.norm(res.V - cp, axis=1) < 1.0) & (d > 0.3 * h)
+            E = {ekey(f[k], f[(k + 1) % len(f)]) for f in res.faces for k in range(len(f))}
+            val = np.bincount(np.array(sorted(E)).ravel(), minlength=len(res.V))
+            return val[ins]
+
+        res = pipeline.run(V, F, pipeline.Params(target_edge=h, guides=[eye]))
+        self.assertEqual(res.metrics["quad_ratio"], 1.0)
+        self.assertEqual(res.metrics.get("holes", 0), 0)
+        cover, cycle = guide_loop(res, eye, h)
+        self.assertTrue(cycle, "the guide must stay a closed edge loop")
+        val = inside_valences(res)
+        self.assertGreater(len(val), 20)
+        self.assertEqual(int((val == 3).sum()), 4, "the core grid's corners are the only poles inside")
+        self.assertEqual(int((val != 4).sum()), 4)
+        # the old behaviour is still there
+        off = pipeline.run(V, F, pipeline.Params(target_edge=h, guides=[eye], guide_fill_inside=False))
+        self.assertTrue(guide_loop(off, eye, h)[1])
+
     def test_guide_rings_become_closed_loops(self):
         # Closed strokes (first point repeated) must come out as one continuous
         # edge loop lying on the stroke: a small ring on a sphere, and rings

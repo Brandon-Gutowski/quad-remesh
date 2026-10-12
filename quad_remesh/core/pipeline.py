@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from . import cleanup, guides as guide_mod, metrics, quadify, symmetry
+from . import cleanup, guides as guide_mod, metrics, quadify, ringfill, symmetry
 from .extract import _components, extract_mesh
 from .features import Features, transfer_features
 from .hierarchy import build_hierarchy
@@ -33,7 +33,8 @@ class Params:
     guides: list = field(default_factory=list)   # polylines; closed ones repeat the first point
     guide_strength: float = 0.7   # how far the flow beside a guide loop bends to follow it
     guide_rings_out: int = 1      # extra concentric loops around each closed guide, one cell apart
-    guide_rings_in: int = 0       # ... and inside it
+    guide_rings_in: int = 0       # ... and inside it (unless guide_fill_inside)
+    guide_fill_inside: bool = True  # rebuild the inside of closed guides as rings around a small grid
     pure_quads: bool = True
     relax_iterations: int = 12
     cleanup: bool = True
@@ -62,7 +63,8 @@ def _with_rings(V, F, params):
     """Add the concentric rings of every closed guide as guides of their own
     (on the whole input, before any symmetry cut)."""
     closed = [g for g in params.guides if guide_mod.is_closed(g)]
-    if not closed or (params.guide_rings_out <= 0 and params.guide_rings_in <= 0):
+    rings_in = 0 if params.guide_fill_inside else params.guide_rings_in
+    if not closed or (params.guide_rings_out <= 0 and rings_in <= 0):
         return params
     Vc, Fc, _ = clean(V, F)
     if not len(Fc):
@@ -82,7 +84,7 @@ def _with_rings(V, F, params):
         others = PointIndex(np.vstack(rest)) if rest else None
         c = int(np.bincount(surf.component_of(g)).argmax())
         cands[gi] = guide_mod.concentric_rings(g, surf, c, step, params.guide_rings_out,
-                                               params.guide_rings_in, others)
+                                               rings_in, others)
     # ...then where rings of two guides run into each other, both go (with the
     # rings beyond them), so neighbouring guides are treated alike.
     flat = [(gi, k, r) for gi, rs in cands.items() for k, r in enumerate(rs)]
@@ -514,6 +516,11 @@ def _finish(ctx, quantized, p0, p1):
     if cleanup.break_stars(pm):
         pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner, iterations=3,
                      comp=pm.comp, size_fn=final_size)
+    if ctx["gproj"] is not None and params.guide_fill_inside:
+        # Concentric rings inside closed guide loops. Last, on the settled
+        # loop: clean-up would rotate their spokes away and relaxing would
+        # inflate the (deliberately small) core quads.
+        ringfill.fill_closed_guides(pm, ctx["gpolys"][0], h, surf)
     if params.untangle:
         yield ("Untangling", prog(0.9))
         pm.V = untangle(pm.V, pm.faces, surf, seg, pm.feat, pm.corner, pm.comp)
