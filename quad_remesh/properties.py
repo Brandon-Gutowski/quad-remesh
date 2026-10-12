@@ -50,13 +50,35 @@ class QR_Settings(bpy.types.PropertyGroup):
     )
     use_guides: BoolProperty(
         name="Use Guides",
-        description="Steer the edge flow along drawn guide strokes",
+        description="Put an edge loop along every drawn guide stroke. A stroke that ends where it "
+                    "started (or a cyclic spline) becomes a closed ring, e.g. around an eye or mouth",
         default=True,
     )
     guide_strength: FloatProperty(
-        name="Strength",
-        description="How strongly guide strokes steer the flow (1 = hard constraint)",
+        name="Influence",
+        description="How far around each guide the edge flow bends to follow it. The edge loop on "
+                    "the guide itself is always kept. 0 = only the loop; 1 = flow runs parallel to "
+                    "the guide up to about 4 quads away (concentric rings)",
         default=0.7, min=0.0, max=1.0, subtype='FACTOR',
+    )
+    guide_rings_out: IntProperty(
+        name="Rings Outside",
+        description="Extra full edge loops around every closed guide (ring), one quad row pair "
+                    "apart, like the loops around an eye or mouth. A ring is left out where it "
+                    "would run into an opening, another guide or another guide's rings",
+        default=1, min=0, max=5,
+    )
+    guide_rings_in: IntProperty(
+        name="Rings Inside",
+        description="Extra full edge loops inside every closed guide. Left out when the ring "
+                    "would get too small or run into an opening",
+        default=0, min=0, max=5,
+    )
+    guide_smoothing: FloatProperty(
+        name="Stroke Smoothing",
+        description="How much hand wobble is taken out of newly drawn guide strokes "
+                    "(rings keep their size). 0 = keep strokes exactly as drawn",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
     )
     guide_object: PointerProperty(
         name="Guides",
@@ -84,8 +106,10 @@ class QR_Settings(bpy.types.PropertyGroup):
         default=True,
     )
     relax_iterations: IntProperty(
-        name="Relax",
-        description="Smoothing iterations that even out quad shapes and sizes",
+        name="Smoothing",
+        description="Passes that even out quad size and squareness after the quads are built. "
+                    "Vertices stay on the original surface, sharp edges and guides. 0 = raw "
+                    "output; more = more even quads, but small surface detail softens a little",
         default=12, min=0, soft_max=50, max=200,
     )
     cleanup: BoolProperty(
@@ -105,8 +129,9 @@ class QR_Settings(bpy.types.PropertyGroup):
         name="Detail",
         description="Keep detail that is smaller than a quad (small fillets, ridges, embossing) by "
                     "using gradually smaller quads there, down to 1/4 size. 0 keeps every quad the "
-                    "same size; detail too fine to keep is smoothed over",
-        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+                    "same size (best for organic / character meshes); detail too fine to keep is "
+                    "smoothed over",
+        default=0.0, min=0.0, max=1.0, subtype='FACTOR',
     )
     hide_original: BoolProperty(
         name="Hide Original",

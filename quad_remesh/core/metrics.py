@@ -98,9 +98,10 @@ def flipped_faces(V, faces, surf_proj, comp=None):
     return sorted(bad)
 
 
-def unexpected_boundary(V, faces, bnd_proj, size_fn):
+def unexpected_boundary(V, faces, bnd_proj, size_fn, far=None):
     """Open edges of the result that do not run along an opening of the input
-    (i.e. holes). `size_fn(points)` gives the local quad size."""
+    (i.e. holes). `size_fn(points)` gives the local quad size. With `far`,
+    only edges more than far*size away from any opening are counted."""
     V = np.asarray(V)
     count = {}
     for f in faces:
@@ -114,4 +115,33 @@ def unexpected_boundary(V, faces, bnd_proj, size_fn):
     if bnd_proj is None or bnd_proj.empty:
         return int(len(open_e))
     _, dist, _ = bnd_proj.project(mid)
-    return int((dist > 0.5 * np.asarray(size_fn(mid))).sum())
+    return int((dist > (0.5 if far is None else far) * np.asarray(size_fn(mid))).sum())
+
+
+def guide_coverage(V, faces, gproj, size_fn, tol=0.15, min_cos=0.85):
+    """How much of the guide strokes' length has a result edge lying on it
+    (both ends within tol*size, running along it). 1.0 = complete loops."""
+    V = np.asarray(V)
+    total = float(np.linalg.norm(gproj.B - gproj.A, axis=1).sum())
+    if total <= 0:
+        return 1.0
+    E = set()
+    for f in faces:
+        for k in range(len(f)):
+            E.add(ekey(f[k], f[(k + 1) % len(f)]))
+    E = np.array(sorted(E), dtype=np.int64).reshape(-1, 2)
+    near = np.array([gproj.kd.find(p)[2] for p in V]) < 2.0 * np.asarray(size_fn(V))
+    E = E[near[E[:, 0]] & near[E[:, 1]]]
+    if not len(E):
+        return 0.0
+    vi = np.unique(E)
+    dv = np.full(len(V), np.inf)
+    dv[vi] = gproj.project(V[vi])[1]
+    mid = 0.5 * (V[E[:, 0]] + V[E[:, 1]])
+    _, _, dirs = gproj.project(mid)
+    d = V[E[:, 1]] - V[E[:, 0]]
+    L = np.linalg.norm(d, axis=1)
+    cos = np.abs(np.einsum("ij,ij->i", d, dirs)) / np.maximum(L * np.linalg.norm(dirs, axis=1), 1e-30)
+    tol_v = tol * np.asarray(size_fn(mid))
+    on = (dv[E[:, 0]] < tol_v) & (dv[E[:, 1]] < tol_v) & (cos > min_cos)
+    return float(min(1.0, L[on].sum() / total))

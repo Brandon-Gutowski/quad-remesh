@@ -75,6 +75,10 @@ def _collapse_short(bm, edge, short=0.8, long=1.33):
     result), no surrounding face flips and no new edge gets too long."""
     lo, hi = short * edge, long * edge
     cand = sorted((e for e in bm.edges if e.calc_length() < lo), key=lambda e: e.calc_length())
+    if not cand:
+        return 0
+    # Geometry only changes in the weld at the end, so creases are found once.
+    sharp_v = {v for e in bm.edges if _sharp(e) for v in e.verts}
     # Collapses whose neighbourhoods do not touch are applied together in one
     # weld (one bmesh operator call per batch: per-edge calls cost O(mesh)).
     locked = set()
@@ -83,7 +87,7 @@ def _collapse_short(bm, edge, short=0.8, long=1.33):
         v1, v2 = e.verts
         if v1 in locked or v2 in locked:
             continue
-        if any(_sharp(x) for x in v1.link_edges) or any(_sharp(x) for x in v2.link_edges):
+        if v1 in sharp_v or v2 in sharp_v:
             continue
         n1 = {x.other_vert(v1) for x in v1.link_edges}
         n2 = {x.other_vert(v2) for x in v2.link_edges}
@@ -118,7 +122,7 @@ def _collapse_short(bm, edge, short=0.8, long=1.33):
     return len(targetmap)
 
 
-def _make_even(bm, edge, max_tris, iterations=10):
+def _make_even(bm, edge, max_tris, iterations=6):
     """Split long / collapse short / flip, until edges are about `edge` long.
     Returns False when the triangle count runs past `max_tris` (the decimated
     mesh was too uneven to even out in reasonable time)."""
@@ -135,7 +139,7 @@ def _make_even(bm, edge, max_tris, iterations=10):
         if flat:
             bmesh.ops.beautify_fill(bm, faces=bm.faces[:], edges=flat)
         bm.normal_update()
-        if len(long) < 0.005 * max(len(bm.edges), 1) and collapsed < 0.005 * max(len(bm.edges), 1):
+        if len(long) < 0.01 * max(len(bm.edges), 1) and collapsed < 0.01 * max(len(bm.edges), 1):
             break
     return len(bm.faces) <= max_tris
 
@@ -245,9 +249,11 @@ def _arrays(bm):
     return V, F
 
 
-def prepare(V, F, edge_target):
+def prepare(V, F, edge_target, even=True):
     """Return (V, F) of a field mesh with edges about `edge_target` long (the
-    input itself when it is not much denser than that)."""
+    input itself when it is not much denser than that). With even=False the
+    decimated mesh is only repaired, not evened out (much faster; enough for
+    measuring curvature)."""
     V = np.asarray(V, dtype=np.float64)
     F = np.asarray(F, dtype=np.int64)
     if not len(F):
@@ -265,7 +271,7 @@ def prepare(V, F, edge_target):
     finally:
         bpy.data.meshes.remove(me)
     try:
-        if not _make_even(bm, edge_target, 3 * target_tris) and real is None:
+        if even and not _make_even(bm, edge_target, 3 * target_tris) and real is None:
             bm.free()
             bm = None
             return _voxel(V, F, edge_target)

@@ -383,3 +383,146 @@ def close_notches(pm, max_len=10, reach=2.5):
             else:
                 i += 1
     return added
+
+
+def _boundary_cycles(out):
+    """Split the open half-edge graph (vertex -> successors) into simple cycles.
+    Where several holes touch at a vertex, each pass through it is cut out as
+    its own cycle."""
+    used = set()
+    cycles = []
+    for s in list(out.keys()):
+        for t in out[s]:
+            if (s, t) in used:
+                continue
+            path, pos, cur = [s], {s: 0}, s
+            while True:
+                nxt = [w for w in out.get(cur, ()) if (cur, w) not in used]
+                if not nxt:
+                    break
+                w = nxt[0]
+                used.add((cur, w))
+                if w in pos:
+                    k = pos[w]
+                    if len(path) - k >= 3:
+                        cycles.append(path[k:])
+                    for v in path[k + 1:]:
+                        del pos[v]
+                    path = path[:k + 1]
+                else:
+                    pos[w] = len(path)
+                    path.append(w)
+                cur = w
+    return cycles
+
+
+def _fill_loop(pm, loop, existing, max_poly=8):
+    """Close a loop (in boundary walk order). Short loops become one polygon
+    (split into quads later); long ones are first cut along their shortest
+    cross chord, recursively, so no high-valence fan centre is created."""
+    n = len(loop)
+    if n <= max_poly:
+        pm.faces.append(list(loop))
+        return
+    P = pm.V[loop]
+    best, best_d = None, np.inf
+    for i in range(n):
+        for k in range(n // 2 - 1, n // 2 + 2):    # roughly halve the loop
+            j = (i + k) % n
+            if min(k, n - k) < 3 or ekey(loop[i], loop[j]) in existing:
+                continue
+            d = np.linalg.norm(P[i] - P[j])
+            if d < best_d:
+                best, best_d = (i, j), d
+    if best is None:
+        pm.faces.append(list(loop))
+        return
+    i, j = best
+    existing.add(ekey(loop[i], loop[j]))
+    a = [loop[(i + t) % n] for t in range((j - i) % n + 1)]
+    b = [loop[(j + t) % n] for t in range((i - j) % n + 1)]
+    _fill_loop(pm, a, existing, max_poly)
+    _fill_loop(pm, b, existing, max_poly)
+
+
+def seal_holes(pm, bnd_proj, size_fn, tol=0.5, reach=5.0, rounds=5):
+    """Close every opening of the result that is not an opening of the input.
+
+    An open edge is *real* when its midpoint lies within tol*size of the input
+    boundary (the same test the hole metric uses); cluster flags are not
+    trusted. Loops made only of non-real edges are filled whatever their
+    length; non-real runs along a real boundary loop are closed back to their
+    endpoints when the closing edge is shorter than reach*size."""
+    added = 0
+    for _ in range(rounds):
+        he_face = {}
+        for fi, f in enumerate(pm.faces):
+            m = len(f)
+            for k in range(m):
+                he_face[(f[k], f[(k + 1) % m])] = fi
+        he = he_face.keys()
+        walk = [(b, a) for a, b in he if (b, a) not in he_face]     # boundary runs b -> a
+        if not walk:
+            break
+        W = np.array(walk, dtype=np.int64)
+        mid = 0.5 * (pm.V[W[:, 0]] + pm.V[W[:, 1]])
+        size = np.asarray(size_fn(mid), dtype=np.float64)
+        if bnd_proj is None or bnd_proj.empty:
+            real = np.zeros(len(W), bool)
+        else:
+            real = bnd_proj.project(mid)[1] < tol * size
+        # Vertices on the real opening follow it (relax projects them onto
+        # the feature / boundary curves instead of letting them drift inward).
+        pm.feat[W[real].ravel()] = True
+        pm.bnd[W[real].ravel()] = True
+        if real.all():
+            break
+        is_real = dict(zip(walk, real.tolist()))
+        out = {}
+        for a, b in walk:
+            out.setdefault(a, []).append(b)
+        existing = {ekey(a, b) for a, b in he}
+        before = added
+        for cyc in _boundary_cycles(out):
+            L = len(cyc)
+            flags = [is_real[(cyc[i], cyc[(i + 1) % L])] for i in range(L)]
+            if all(flags):
+                continue
+            if not any(flags) or L <= 4:
+                _fill_loop(pm, cyc, existing)
+                added += 1
+                continue
+            k0 = next(i for i in range(L) if flags[i])
+            cyc = cyc[k0:] + cyc[:k0]
+            flags = flags[k0:] + flags[:k0]
+            i = 0
+            while i < L:
+                if flags[i]:
+                    i += 1
+                    continue
+                j = i
+                while j < L and not flags[j]:
+                    j += 1
+                run = [cyc[k % L] for k in range(i, j + 1)]   # vertices of the non-real run
+                u, w = run[0], run[-1]
+                if len(run) == 2 and bnd_proj is not None and not bnd_proj.empty:
+                    # One edge cutting across a curved opening: bend it onto
+                    # the real boundary through a new vertex.
+                    x = bnd_proj.project(0.5 * (pm.V[u] + pm.V[w])[None])[0][0]
+                    luw = np.linalg.norm(pm.V[w] - pm.V[u])
+                    f = pm.faces[he_face[(w, u)]]
+                    k = next((q for q in range(len(f)) if f[q] == w and f[(q + 1) % len(f)] == u), None)
+                    if k is not None and min(np.linalg.norm(x - pm.V[u]), np.linalg.norm(x - pm.V[w])) > 0.2 * luw:
+                        xi = pm.add_vertex(x, feat=True, bnd=True, like=u)
+                        f.insert(k + 1, xi)
+                        added += 1
+                elif u != w and ekey(u, w) not in existing:
+                    lim = reach * float(np.asarray(size_fn(pm.V[[u]]))[0])
+                    if np.linalg.norm(pm.V[u] - pm.V[w]) <= lim:
+                        existing.add(ekey(u, w))
+                        _fill_loop(pm, run, existing)
+                        added += 1
+                i = j
+        if added == before:
+            break
+    return added

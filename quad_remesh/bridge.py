@@ -139,7 +139,8 @@ def symmetry_plane(obj, axis):
 
 
 def guide_polylines(guide_obj):
-    """World-space point lists of every spline in a curve object."""
+    """World-space point lists of every spline in a curve object. Cyclic
+    splines repeat their first point at the end (a closed ring)."""
     if guide_obj is None or guide_obj.type != 'CURVE':
         return []
     M = guide_obj.matrix_world
@@ -148,7 +149,10 @@ def guide_polylines(guide_obj):
         pts = spl.bezier_points if spl.type == 'BEZIER' else spl.points
         if len(pts) < 2:
             continue
-        out.append(np.array([(M @ p.co.to_3d())[:] for p in pts], dtype=np.float64))
+        P = [(M @ p.co.to_3d())[:] for p in pts]
+        if spl.use_cyclic_u:
+            P.append(P[0])
+        out.append(np.array(P, dtype=np.float64))
     return out
 
 

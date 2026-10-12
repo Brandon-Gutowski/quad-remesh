@@ -53,12 +53,18 @@ class PolyMesh:
                 open_v[b] = True
         return val, open_v
 
-    def add_vertex(self, p, feat=False, corner=False, bnd=False):
+    def add_vertex(self, p, feat=False, corner=False, bnd=False, comp=None, like=None):
+        """Append a vertex. Per-vertex attributes are copied from vertex `like`."""
         self.V = np.vstack([self.V, p[None]])
         self.feat = np.append(self.feat, feat)
         self.corner = np.append(self.corner, corner)
         self.bnd = np.append(self.bnd, bnd)
-        self.comp = np.append(self.comp, self.comp[0] if len(self.comp) else 0)
+        if comp is None:
+            comp = self.comp[like] if like is not None else (self.comp[0] if len(self.comp) else 0)
+        self.comp = np.append(self.comp, comp)
+        for k, v in self.attrs.items():
+            row = v[like] if like is not None else np.zeros_like(v[0])
+            self.attrs[k] = np.concatenate([v, row[None]])
         return len(self.V) - 1
 
     def compact(self):

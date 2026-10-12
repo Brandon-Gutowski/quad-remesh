@@ -68,8 +68,12 @@ class QR_PT_main(bpy.types.Panel):
         row = sub.row(align=True)
         row.operator("quad_remesh.draw_guides", icon='GREASEPENCIL')
         row.operator("quad_remesh.clear_guides", text="", icon='TRASH')
+        sub.prop(st, "guide_smoothing", slider=True)
         sub.prop(st, "guide_object", text="")
         sub.prop(st, "guide_strength", slider=True)
+        row = sub.row(align=True)
+        row.prop(st, "guide_rings_out", text="Rings Out")
+        row.prop(st, "guide_rings_in", text="In")
 
         box = layout.box()
         box.label(text="Quality", icon='MESH_GRID')

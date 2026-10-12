@@ -83,15 +83,68 @@ def cut_half(V, F, p0, n, pairs=None, tol=None):
     return V, F2, P2
 
 
-def fold_guides(guides, p0, n):
-    """Reflect guide points from the negative side onto the kept half."""
-    out = []
+def _split_at_plane(g, sd):
+    """Pieces of polyline g on each side of the plane, each ending exactly on
+    the plane where it crosses it. Returns [(piece, side)]."""
+    pieces, cur = [], [g[0]]
+    for k in range(1, len(g)):
+        a, b = sd[k - 1], sd[k]
+        if (a < 0) != (b < 0) and a != b:
+            x = g[k - 1] + (g[k] - g[k - 1]) * (a / (a - b))
+            cur.append(x)
+            pieces.append((np.array(cur), a < 0))
+            cur = [x]
+        cur.append(g[k])
+    pieces.append((np.array(cur), sd[-1] < 0 if sd[-1] != 0 else sd[0] < 0))
+    return [(pc, neg) for pc, neg in pieces if len(pc) >= 2]
+
+
+def _dist_to_polyline(P, Q):
+    """Distance from each point of P to polyline Q."""
+    A, B = Q[:-1], Q[1:]
+    AB = B - A
+    t = np.einsum("pij,ij->pi", P[:, None] - A[None], AB) / np.maximum(np.einsum("ij,ij->i", AB, AB), 1e-30)
+    C = A[None] + AB[None] * np.clip(t, 0.0, 1.0)[..., None]
+    return np.linalg.norm(C - P[:, None], axis=2).min(1)
+
+
+def _length(g):
+    return float(np.linalg.norm(np.diff(g, axis=0), axis=1).sum())
+
+
+def fold_guides(guides, p0, n, tol=0.01):
+    """Guides for the kept (+) half: strokes are cut at the mirror plane, pieces
+    on the - side are reflected over, and pieces that then coincide with
+    another one (a stroke drawn mirrored on both sides, or a ring crossing the
+    plane) are kept once."""
+    pieces = []
     for g in guides:
         g = np.array(g, dtype=np.float64)
-        s = signed_distance(g, p0, n)
-        neg = s < 0
-        g[neg] -= 2.0 * np.outer(s[neg], n)
-        out.append(g)
+        if len(g) < 2:
+            continue
+        sd = signed_distance(g, p0, n)
+        closed = np.allclose(g[0], g[-1])
+        if (sd >= 0).all() or (sd <= 0).all():
+            parts = [(g, bool((sd <= 0).all() and (sd < 0).any()))]
+        else:
+            if closed:
+                # start the ring at a crossing so it splits into whole arcs
+                k = int(np.nonzero(np.sign(sd[:-1]) != np.sign(sd[0]))[0][0])
+                g = np.concatenate([g[k:-1], g[:k + 1]])
+                sd = signed_distance(g, p0, n)
+            parts = _split_at_plane(g, sd)
+        for pc, neg in parts:
+            if neg:
+                pc = pc - 2.0 * np.outer(signed_distance(pc, p0, n), n)
+            pieces.append(pc)
+    out = []
+    for pc in sorted(pieces, key=_length, reverse=True):
+        L = _length(pc)
+        if L <= 0:
+            continue
+        if any(_dist_to_polyline(pc, q).max() <= tol * max(L, _length(q)) for q in out):
+            continue
+        out.append(pc)
     return out
 
 

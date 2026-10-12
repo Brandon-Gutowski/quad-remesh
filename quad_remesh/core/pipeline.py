@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from . import cleanup, metrics, quadify, symmetry
+from . import cleanup, guides as guide_mod, metrics, quadify, symmetry
 from .extract import _components, extract_mesh
 from .features import Features, transfer_features
 from .hierarchy import build_hierarchy
@@ -30,8 +30,10 @@ class Params:
     detect_sharp: bool = True
     sharp_angle: float = math.radians(40.0)
     marked_pairs: np.ndarray = None
-    guides: list = field(default_factory=list)
-    guide_strength: float = 0.7
+    guides: list = field(default_factory=list)   # polylines; closed ones repeat the first point
+    guide_strength: float = 0.7   # how far the flow beside a guide loop bends to follow it
+    guide_rings_out: int = 1      # extra concentric loops around each closed guide, one cell apart
+    guide_rings_in: int = 0       # ... and inside it
     pure_quads: bool = True
     relax_iterations: int = 12
     cleanup: bool = True
@@ -41,7 +43,7 @@ class Params:
     quantize: bool = True
     symmetry_plane: tuple = None   # (point, unit normal); keeps the + side and mirrors it
     detail: float = 0.0            # 0 = uniform quads; 1 = down to 1/4 size where detail needs it
-    prepare_fn: object = None      # (V, F, edge_target) -> (V, F): simplify/clean the field mesh
+    prepare_fn: object = None      # (V, F, edge_target, even=True) -> (V, F): simplify/clean the field mesh
 
 
 @dataclass
@@ -56,50 +58,52 @@ class Cancelled(Exception):
     pass
 
 
-def _resample(poly, spacing):
-    poly = np.asarray(poly, dtype=np.float64)
-    if len(poly) < 2:
-        return poly, np.zeros_like(poly)
-    seg = np.linalg.norm(np.diff(poly, axis=0), axis=1)
-    s = np.concatenate([[0], np.cumsum(seg)])
-    if s[-1] <= 0:
-        return poly[:1], np.zeros((1, 3))
-    t = np.linspace(0, s[-1], max(2, int(np.ceil(s[-1] / spacing)) + 1))
-    pts = np.stack([np.interp(t, s, poly[:, k]) for k in range(3)], 1)
-    tan = np.gradient(pts, axis=0)
-    tan /= np.maximum(np.linalg.norm(tan, axis=1, keepdims=True), 1e-30)
-    return pts, tan
-
-
-def guide_constraints(mesh, guides, radius, strength):
-    n = len(mesh.V)
-    soft_mask = np.zeros(n, bool)
-    soft_dir = np.zeros((n, 3))
-    soft_w = np.zeros(n)
-    hard_mask = np.zeros(n, bool)
-    if not guides:
-        return soft_mask, soft_dir, soft_w, hard_mask
-    index = PointIndex(mesh.V)
-    best = np.full(n, np.inf)
-    lam = min(50.0, strength / max(1e-3, 1.0 - strength))
-    for poly in guides:
-        pts, tan = _resample(poly, radius / 4.0)
-        for p, t in zip(pts, tan):
-            if not t.any():
-                continue
-            for v in index.within(p, radius):
-                d = np.linalg.norm(mesh.V[v] - p)
-                if d < best[v]:
-                    best[v] = d
-                    soft_dir[v] = t
-                    soft_w[v] = lam * (1.0 - d / radius) ** 2
-                    soft_mask[v] = True
-    if strength >= 0.999:
-        hard_mask = soft_mask & (best < 0.35 * radius)
-    return soft_mask, soft_dir, soft_w, hard_mask
+def _with_rings(V, F, params):
+    """Add the concentric rings of every closed guide as guides of their own
+    (on the whole input, before any symmetry cut)."""
+    closed = [g for g in params.guides if guide_mod.is_closed(g)]
+    if not closed or (params.guide_rings_out <= 0 and params.guide_rings_in <= 0):
+        return params
+    Vc, Fc, _ = clean(V, F)
+    if not len(Fc):
+        return params
+    mesh = TriMesh(Vc, Fc)
+    comp = _components_of(len(Vc), mesh.edges)
+    surf = SurfaceProjector(Vc, Fc, comp[Fc[:, 0]])
+    step = (2.0 if params.pure_quads else 1.0) * float(params.target_edge)
+    guides = [np.asarray(g, dtype=np.float64) for g in params.guides]
+    pts = [guide_mod.resample(g, 0.25 * step)[0] for g in guides]
+    # Rings of each guide, stopped by the drawn strokes...
+    cands = {}
+    for gi, g in enumerate(guides):
+        if not guide_mod.is_closed(g):
+            continue
+        rest = [q for k, q in enumerate(pts) if k != gi]
+        others = PointIndex(np.vstack(rest)) if rest else None
+        c = int(np.bincount(surf.component_of(g)).argmax())
+        cands[gi] = guide_mod.concentric_rings(g, surf, c, step, params.guide_rings_out,
+                                               params.guide_rings_in, others)
+    # ...then where rings of two guides run into each other, both go (with the
+    # rings beyond them), so neighbouring guides are treated alike.
+    flat = [(gi, k, r) for gi, rs in cands.items() for k, r in enumerate(rs)]
+    keep = {(gi, k) for gi, k, _r in flat}
+    trees = {(gi, k): PointIndex(r) for gi, k, r in flat}
+    for i, (ga, ka, ra) in enumerate(flat):
+        for gb, kb, _rb in flat[i + 1:]:
+            if ga != gb and min(trees[(gb, kb)].kd.find(q)[2] for q in ra) < 0.75 * step:
+                keep.discard((ga, ka))
+                keep.discard((gb, kb))
+    added = []
+    for gi, rs in cands.items():
+        for k, r in enumerate(rs):
+            # an outer ring only stays if every ring inside it (same side) stayed
+            if all((gi, j) in keep for j in range(k + 1)):
+                added.append(r)
+    return replace(params, guides=guides + added) if added else params
 
 
 def remesh(V, F, params):
+    params = _with_rings(V, F, params)
     if params.symmetry_plane is None:
         return (yield from _remesh_parts(V, F, params))
     p0 = np.asarray(params.symmetry_plane[0], dtype=np.float64)
@@ -262,8 +266,9 @@ def _remesh(V, F, params):
                if ref_feats.any else None)
         if sizing:
             yield ("Measuring detail", 0.03)
-            # evenly tessellated copy at the finest resolution detail may need
-            dV, dF = params.prepare_fn(ref.V, ref.F, 0.5 * detail_min / cell_per_quad)
+            # copy at the finest resolution detail may need (curvature does not
+            # need it evened out, which is the expensive part)
+            dV, dF = params.prepare_fn(ref.V, ref.F, 0.5 * detail_min / cell_per_quad, even=False)
             dmesh = TriMesh(*clean(dV, dF)[:2])
             measure_sizes(dmesh, transfer_features(dmesh, seg))
         finest = min([scale] + [float(v.min()) for v in size_vals if len(v)])
@@ -332,18 +337,35 @@ def _remesh(V, F, params):
         seg = (SegmentProjector(feats.segments, scale / 8.0, vcomp[feats.feature_edges[:, 0]])
                if feats.any else None)
 
+    # Guide strokes: chains of field-mesh edges moved onto the strokes, which
+    # become line constraints so an edge loop runs along each stroke.
+    gproj, gsegs, polys, pcomps = None, np.zeros((0, 2, 3)), [], []
+    gverts = np.zeros(len(mesh.V), bool)
+    gedges = np.zeros(len(mesh.edges), bool)
+    gtan = np.zeros((len(mesh.V), 3))
+    if params.guides:
+        yield ("Placing guide loops", 0.08)
+        med = float(np.median(mesh.edge_length))
+        polys, pcomps = guide_mod.on_surface(params.guides, surf, 0.5 * med, 0.5 * scale)
+        if polys:
+            gproj, gsegs = guide_mod.projector(polys, pcomps, scale / 8.0)
+        if gproj is not None:
+            skip = feats.is_feature | feats.is_boundary
+            gverts, gedges, _ = guide_mod.edge_chains(mesh, polys, pcomps, gproj, vcomp, skip)
+            mesh = TriMesh(guide_mod.snap_chain(mesh, gverts, gproj, vcomp, med), mesh.F)
+            gverts, gedges, gtan = guide_mod.edge_chains(mesh, polys, pcomps, gproj, vcomp, skip)
+
     yield ("Building hierarchy", 0.08)
     N = smooth_normals(mesh, feats.edge_mask, 0.25 * float(np.median(hv)))
     levels = build_hierarchy(mesh.V, N, mesh.vertex_area, mesh.ei, mesh.ej)
 
-    line_mask = feats.is_feature & ~feats.is_corner
+    line_mask = (feats.is_feature & ~feats.is_corner) | gverts
+    tangent = feats.tangent.copy()
+    tangent[gverts] = gtan[gverts]
     hard_mask = line_mask.copy()
-    hard_dir = feats.tangent.copy()
-    soft = guide_constraints(mesh, params.guides, 0.75 * scale, params.guide_strength)
-    soft_mask, soft_dir, soft_w, ghard = soft
-    gh = ghard & ~hard_mask
-    hard_mask |= gh
-    hard_dir[gh] = soft_dir[gh]
+    hard_dir = tangent
+    band = (1.0 + 3.0 * min(max(params.guide_strength, 0.0), 1.0)) * scale
+    soft_mask, soft_dir, soft_w = guide_mod.soft_band(mesh, gproj, vcomp, band, params.guide_strength)
     soft_mask &= ~hard_mask
 
     gen = solve_orientation(levels, hard_mask, hard_dir, soft_mask, soft_dir, soft_w)
@@ -363,7 +385,7 @@ def _remesh(V, F, params):
     def size_at(pts, factor=1.0):
         return np.array([hv[index.nearest(p)] for p in pts]) * factor
 
-    gen = solve_position(levels, Q, hv, line_mask, feats.tangent, feats.is_corner)
+    gen = solve_position(levels, Q, hv, line_mask, tangent, feats.is_corner)
     while True:
         try:
             p = next(gen)
@@ -375,7 +397,16 @@ def _remesh(V, F, params):
     bnd_e = ref.edges[ref.edge_face_count == 1]
     bnd_proj = (SegmentProjector(np.stack([ref.V[bnd_e[:, 0]], ref.V[bnd_e[:, 1]]], 1), scale / 8.0)
                 if len(bnd_e) else None)
+    # Sharp features and guide loops alike are snapped to and protected during
+    # clean-up; only sharp ones are marked on the result.
+    seg_all = seg
+    if gproj is not None:
+        sharp_segs = feats.segments if seg is not None else np.zeros((0, 2, 3))
+        sharp_comp = seg.seg_comp if seg is not None else np.zeros(0, np.int64)
+        seg_all = SegmentProjector(np.concatenate([sharp_segs, gsegs], 0), scale / 8.0,
+                                   np.concatenate([sharp_comp, gproj.seg_comp]))
     ctx = dict(mesh=mesh, N=N, Q=Q, O=O, hv=hv, feats=feats, vcomp=vcomp, surf=surf, seg=seg,
+               seg_all=seg_all, gproj=gproj, gpolys=(polys, pcomps), is_feature=feats.is_feature | gverts, edge_mask=feats.edge_mask | gedges,
                bnd_proj=bnd_proj,
                size_at=size_at, h=h, scale=scale, params=params)
     expected = float((mesh.vertex_area / (hv / cell_per_quad) ** 2).sum())
@@ -391,15 +422,17 @@ def _remesh(V, F, params):
 
 
 def _suspicious(m, expected):
-    return (m["v6plus"] > 0 or m.get("flipped", 0) > 0 or m.get("holes", 0) > 0 or m["edge_cv"] > 0.3
+    return (m.get("guide_coverage", 1.0) < 0.97 or m["v6plus"] > 0 or m.get("flipped", 0) > 0 or m.get("holes", 0) > 0 or m["edge_cv"] > 0.3
             or abs(m["faces"] / max(expected, 1.0) - 1.0) > 0.15)
 
 
 def _score(m, expected):
-    """Lower is better: poles first, then defects that look broken."""
-    s = m["v3"] + m["v5"] + 4.0 * m["v6plus"]
+    """Lower is better: interior holes above all, then poles and defects that look broken."""
+    s = 1e6 * m.get("interior_holes", 0) + 10.0 * m.get("holes", 0)
+    # every quad length of a guide stroke without an edge loop on it
+    s += 20.0 * (1.0 - m.get("guide_coverage", 1.0)) * m.get("guide_cells", 0.0)
+    s += m["v3"] + m["v5"] + 4.0 * m["v6plus"]
     s += 5.0 * m.get("flipped", 0)
-    s += 5.0 * m.get("holes", 0)
     s += 60.0 * max(0.0, m["edge_cv"] - 0.25)
     s += 80.0 * max(0.0, abs(m["faces"] / max(expected, 1.0) - 1.0) - 0.15)
     return s
@@ -408,20 +441,24 @@ def _score(m, expected):
 def _finish(ctx, quantized, p0, p1):
     """Extraction and all topology / geometry clean-up after the fields."""
     mesh, N, Q, O, hv = ctx["mesh"], ctx["N"], ctx["Q"], ctx["O"], ctx["hv"]
-    feats, vcomp, surf, seg = ctx["feats"], ctx["vcomp"], ctx["surf"], ctx["seg"]
+    feats, vcomp, surf, seg = ctx["feats"], ctx["vcomp"], ctx["surf"], ctx["seg_all"]
     size_at, h, scale, params = ctx["size_at"], ctx["h"], ctx["scale"], ctx["params"]
+    is_feature, edge_mask = ctx["is_feature"], ctx["edge_mask"]
 
     def prog(f):
         return p0 + (p1 - p0) * f
 
+    def final_size(pts):
+        return size_at(pts, h / scale)
+
     yield ("Extracting quads", prog(0.0))
     if quantized:
         VP, VN, faces, c_feat, c_corner, c_bnd, c_comp, VQ, hc, _q = quantize_fine(
-            mesh, N, Q, O, hv, feats.edge_mask, feats.is_feature, feats.is_corner, feats.is_boundary, vcomp)
+            mesh, N, Q, O, hv, edge_mask, is_feature, feats.is_corner, feats.is_boundary, vcomp)
     else:
         VP, VN, faces, c_feat, c_corner, c_bnd, c_comp, VQ, hc = extract_mesh(
             mesh.V, N, Q, O, mesh.edges, hv,
-            feats.is_feature, feats.is_corner, feats.is_boundary, vcomp)
+            is_feature, feats.is_corner, feats.is_boundary, vcomp)
     if not faces:
         raise ValueError("Extraction produced no faces; try a lower density")
     pm = PolyMesh(VP, faces, c_feat, c_corner, c_bnd, comp=c_comp)
@@ -436,6 +473,7 @@ def _finish(ctx, quantized, p0, p1):
     yield ("Fixing irregular faces", prog(0.25))
     quadify.fill_holes(pm)
     quadify.close_notches(pm)
+    quadify.seal_holes(pm, ctx["bnd_proj"], final_size)
     quadify.mark_feature_edges(pm, seg)
     quadify.dissolve_valence2(pm)
     quadify.pair_odd_faces(pm, max_depth=6)
@@ -455,10 +493,10 @@ def _finish(ctx, quantized, p0, p1):
         pm = quadify.subdivide(pm)
     else:
         quadify.split_odd_ngons(pm)
+    if ctx["gproj"] is not None:
+        # close whatever the lattice left open in each guide loop
+        guide_mod.trace_loops(pm, *ctx["gpolys"], ctx["gproj"], final_size)
     yield ("Relaxing", prog(0.55))
-
-    def final_size(pts):
-        return size_at(pts, h / scale)
 
     pm.V = relax(pm.V, pm.faces, h, surf, seg, pm.feat, pm.corner,
                  iterations=max(1, params.relax_iterations // 2), comp=pm.comp, size_fn=final_size)
@@ -481,10 +519,19 @@ def _finish(ctx, quantized, p0, p1):
         pm.V = untangle(pm.V, pm.faces, surf, seg, pm.feat, pm.corner, pm.comp)
 
     m = metrics.compute(pm.V, pm.faces, surf, comp=pm.comp)
-    m["holes"] = metrics.unexpected_boundary(pm.V, pm.faces, ctx["bnd_proj"],
-                                             lambda pts: final_size(pts))
+    m["holes"] = metrics.unexpected_boundary(pm.V, pm.faces, ctx["bnd_proj"], final_size)
+    # open edges away from every opening of the input: real holes, not slivers along a rim
+    m["interior_holes"] = metrics.unexpected_boundary(pm.V, pm.faces, ctx["bnd_proj"], final_size, far=2.0)
+    if ctx["gproj"] is not None:
+        m["guide_coverage"] = metrics.guide_coverage(pm.V, pm.faces, ctx["gproj"], final_size)
+        m["guide_cells"] = float(np.linalg.norm(ctx["gproj"].B - ctx["gproj"].A, axis=1).sum()) / h
     m["method"] = "quantized" if quantized else "classic"
-    return Result(pm.V, pm.faces, m, set(pm.feature_edges))
+    fe = set(pm.feature_edges)
+    if seg is not ctx["seg"]:
+        # guide loops were protected as features; only sharp edges are marked
+        quadify.mark_feature_edges(pm, ctx["seg"])
+        fe = set(pm.feature_edges)
+    return Result(pm.V, pm.faces, m, fe)
 
 
 def run(V, F, params, progress=None):

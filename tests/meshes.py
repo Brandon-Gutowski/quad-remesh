@@ -177,3 +177,22 @@ def sliver_box(size=2.0, cuts=24):
     bmesh.ops.triangulate(bm, faces=bm.faces[:], quad_method='FIXED', ngon_method='EAR_CLIP')
     bm.verts.index_update()
     return _from_bm(bm)
+
+
+def blob_head(subdivisions=6):
+    """Dense, closed, sculpt-like head: an egg with eye bulges in sockets, a
+    nose and a mouth dip (for guide rings around facial features)."""
+    bm = bmesh.new()
+    bmesh.ops.create_icosphere(bm, subdivisions=subdivisions, radius=1.0)
+    V, F = _from_bm(bm)
+    n = V / np.linalg.norm(V, axis=1, keepdims=True)
+    V = V * np.array([0.85, 1.0, 1.15])
+
+    def bump(c, r, a):
+        c = np.array(c, dtype=np.float64) / np.linalg.norm(c)
+        return a * np.exp(-(np.linalg.norm(n - c, axis=1) / r) ** 2)
+
+    disp = (bump((0.35, -1, 0.25), 0.18, 0.08) + bump((-0.35, -1, 0.25), 0.18, 0.08)
+            - bump((0.35, -1, 0.3), 0.32, 0.06) - bump((-0.35, -1, 0.3), 0.32, 0.06)
+            + bump((0, -1, -0.05), 0.12, 0.12) - bump((0, -1, -0.45), 0.2, 0.05))
+    return V + n * disp[:, None], F

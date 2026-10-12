@@ -22,6 +22,8 @@ def _params(context, obj):
         marked_pairs=marked if st.follow_marked_sharp else None,
         guides=guides,
         guide_strength=st.guide_strength,
+        guide_rings_out=st.guide_rings_out,
+        guide_rings_in=st.guide_rings_in,
         pure_quads=st.pure_quads,
         relax_iterations=st.relax_iterations,
         cleanup=st.cleanup,
